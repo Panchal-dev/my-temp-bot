@@ -75,7 +75,8 @@ def generate_links(start_year, end_year, username, title_only=False):
     if not username or not isinstance(username, str):
         raise ValueError("Invalid username")
     
-    current_year = datetime.now().year
+    current_date = datetime.now()
+    current_year = current_date.year
     start_year = max(2010, min(start_year, current_year))
     end_year = min(current_year, max(end_year, start_year))
     
@@ -84,11 +85,14 @@ def generate_links(start_year, end_year, username, title_only=False):
         months = [("01-01", "03-31"), ("04-01", "06-30"), 
                  ("07-01", "09-30"), ("10-01", "12-31")]
         for start_month, end_month in months:
-            if year == current_year:
-                current_date = datetime.now()
-                quarter_end = datetime.strptime(f"{year}-{end_month}", "%Y-%m-%d")
-                if quarter_end > current_date:
-                    continue
+            start_date = datetime.strptime(f"{year}-{start_month}", "%Y-%m-%d")
+            end_date = datetime.strptime(f"{year}-{end_month}", "%Y-%m-%d")
+            # For current year, adjust end_date to current date if it exceeds
+            if year == current_year and end_date > current_date:
+                end_date = current_date
+                end_month = current_date.strftime("%m-%d")
+            if start_date > current_date:
+                continue
                 
             url = (
                 f"{BASE_URL}/search/39143295/?q={username.replace(' ', '+')}"
@@ -159,18 +163,31 @@ def process_post(post_link, username, start_year, end_year, media_by_year):
         response = make_request(post_link)
         soup = BeautifulSoup(response.text, 'html.parser')
         
-        # Extract post date
+        # Extract post date with multiple fallbacks
+        year = None
         date_elem = soup.find('time', class_='u-dt')
         if date_elem and 'datetime' in date_elem.attrs:
-            post_date = datetime.strptime(date_elem['datetime'], "%Y-%m-%dT%H:%M:%S%z")
-            year = post_date.year
-        else:
-            # Fallback: Use regex or assume earliest year if date not found
+            try:
+                post_date = datetime.strptime(date_elem['datetime'], "%Y-%m-%dT%H:%M:%S%z")
+                year = post_date.year
+            except ValueError:
+                pass
+        
+        # Fallback 1: Try text content of time element
+        if not year and date_elem:
+            date_text = date_elem.get_text(strip=True)
+            match = re.search(r'(\d{4})', date_text)
+            if match:
+                year = int(match.group(1))
+        
+        # Fallback 2: Default to start_year if no date found
+        if not year:
             year = start_year
             logger.warning(f"Date not found for {post_link}, defaulting to {year}")
 
         if year < start_year or year > end_year:
-            return  # Skip if outside range
+            logger.info(f"Skipping {post_link} - year {year} outside range {start_year}-{end_year}")
+            return
         
         post_id = re.search(r'post-(\d+)', post_link)
         articles = []
@@ -326,7 +343,7 @@ def telegram_webhook():
         if len(parts) < 1 or (parts[0] == '/start' and len(parts) < 2):
             send_telegram_message(
                 chat_id=chat_id,
-                text="Usage: username [title_only y/n] [start_year] [end_year]\nExample: 'Madhuri Dixit' y 2020 2023\nUse /stop to cancel",
+                text="Usage: username [title_only y/n] [start_year] [end_year]\nExample: 'Madhuri Dixit' y 2020 2025\nUse /stop to cancel",
                 reply_to_message_id=message_id
             )
             return '', 200
