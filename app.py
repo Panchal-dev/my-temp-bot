@@ -74,8 +74,8 @@ def generate_links(start_year, end_year, username, title_only=False):
     
     # Ensure years are within valid range
     current_year = datetime.now().year
-    start_year = max(2010, min(start_year, current_year))
-    end_year = max(2010, min(end_year, current_year))
+    start_year = max(2010, start_year)
+    end_year = min(current_year, end_year)
     
     if start_year > end_year:
         start_year, end_year = end_year, start_year
@@ -86,13 +86,11 @@ def generate_links(start_year, end_year, username, title_only=False):
                  ("07-01", "09-30"), ("10-01", "12-31")]
         for start_month, end_month in months:
             try:
-                # For current year, only include quarters that have passed
+                # Skip future quarters for current year
                 if year == current_year:
                     current_month = datetime.now().month
-                    quarter = (current_month - 1) // 3 + 1
-                    if (start_month == "10-01" and quarter < 4) or \
-                       (start_month == "07-01" and quarter < 3) or \
-                       (start_month == "04-01" and quarter < 2):
+                    quarter_end_month = int(end_month.split('-')[1])
+                    if quarter_end_month > current_month:
                         continue
                 
                 url = (
@@ -395,15 +393,19 @@ def telegram_webhook():
             if not search_links:
                 raise ScraperError("No search URLs generated")
             
-            for _, search_link in search_links:
+            logger.info(f"Generated {len(search_links)} search URLs for years {start_year}-{end_year}")
+            
+            for year, search_link in search_links:
                 try:
                     total_pages = fetch_total_pages(search_link)
                     pages_to_scrape = min(total_pages, MAX_PAGES_PER_SEARCH)
+                    logger.info(f"Processing {pages_to_scrape} pages for year {year}")
                     
                     for page in range(1, pages_to_scrape + 1):
                         try:
                             post_links = scrape_post_links(f"{search_link}&page={page}")
                             all_post_links.extend(post_links)
+                            logger.info(f"Found {len(post_links)} posts on page {page} for year {year}")
                         except Exception as e:
                             logger.error(f"Failed to scrape page {page}: {str(e)}")
                             continue
@@ -413,6 +415,8 @@ def telegram_webhook():
             
             if not all_post_links:
                 raise ScraperError("No posts found matching criteria")
+            
+            logger.info(f"Total posts to process: {len(all_post_links)}")
             
             # Process posts in parallel
             with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
