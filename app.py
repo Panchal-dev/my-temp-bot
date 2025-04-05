@@ -72,6 +72,11 @@ def generate_links(start_year, end_year, username, title_only=False):
     if not username or not isinstance(username, str):
         raise ValueError("Invalid username")
     
+    # Ensure years are within valid range
+    current_year = datetime.now().year
+    start_year = max(2010, min(start_year, current_year))
+    end_year = max(2010, min(end_year, current_year))
+    
     if start_year > end_year:
         start_year, end_year = end_year, start_year
 
@@ -81,6 +86,15 @@ def generate_links(start_year, end_year, username, title_only=False):
                  ("07-01", "09-30"), ("10-01", "12-31")]
         for start_month, end_month in months:
             try:
+                # For current year, only include quarters that have passed
+                if year == current_year:
+                    current_month = datetime.now().month
+                    quarter = (current_month - 1) // 3 + 1
+                    if (start_month == "10-01" and quarter < 4) or \
+                       (start_month == "07-01" and quarter < 3) or \
+                       (start_month == "04-01" and quarter < 2):
+                        continue
+                
                 url = (
                     f"{BASE_URL}/search/39143295/?q={username.replace(' ', '+')}"
                     f"&c[newer_than]={year}-{start_month}"
