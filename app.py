@@ -25,7 +25,7 @@ app = Flask(__name__)
 MAX_RETRIES = 3
 REQUEST_TIMEOUT = 10
 MAX_WORKERS = 5
-MAX_PAGES_PER_SEARCH = 10  # Aligned with original script's split logic
+MAX_PAGES_PER_SEARCH = 10
 
 try:
     TELEGRAM_BOT_TOKEN = os.environ['TELEGRAM_BOT_TOKEN']
@@ -335,51 +335,49 @@ def telegram_webhook():
             text=f"🔍 Searching for '{username}' ({start_year}-{end_year})..."
         )
 
-        unique_images, unique_videos, unique_gifs = set(), set(), set()
-        all_post_links = set()
-        
-        search_links = generate_links(start_year, end_year, username, title_only)
-        if not search_links:
-            bot.edit_message_text(
-                chat_id=chat_id,
-                message_id=progress_msg.message_id,
-                text=f"⚠️ No search URLs generated for '{username}'"
-            )
-            return '', 200
-
-        for year, search_link in search_links:
-            if chat_id not in active_tasks:
-                raise ScraperError("Task cancelled by user")
-            total_pages = fetch_total_pages(search_link)
-            urls_to_process = split_url(search_link, *re.search(r"c\[newer_than\]=(\d{4}-\d{2}-\d{2})&c\[older_than\]=(\d{4}-\d{2}-\d{2})", search_link).groups()) if total_pages > MAX_PAGES_PER_SEARCH else [search_link]
-            
-            for url in urls_to_process:
-                if chat_id not in active_tasks:
-                    raise ScraperError("Task cancelled by user")
-                pages = fetch_total_pages(url)
-                for page in range(1, pages + 1):
-                    if chat_id not in active_tasks:
-                        raise ScraperError("Task cancelled by user")
-                    post_links = scrape_post_links(f"{url}&page={page}")
-                    all_post_links.update(post_links)
-
-        if not all_post_links:
-            bot.edit_message_text(
-                chat_id=chat_id,
-                message_id=progress_msg.message_id,
-                text=f"⚠️ No posts found for '{username}' ({start_year}-{end_year})"
-            )
-            return '', 200
-
+        # Register task immediately
         executor = ThreadPoolExecutor(max_workers=MAX_WORKERS)
-        futures = [
-            executor.submit(process_post, link, username, unique_images, unique_videos, unique_gifs)
-            for link in all_post_links
-        ]
-        
-        active_tasks[chat_id] = (executor, futures)
+        active_tasks[chat_id] = (executor, [])  # Initialize with empty futures
 
         try:
+            unique_images, unique_videos, unique_gifs = set(), set(), set()
+            all_post_links = set()
+            
+            search_links = generate_links(start_year, end_year, username, title_only)
+            if not search_links:
+                bot.edit_message_text(
+                    chat_id=chat_id,
+                    message_id=progress_msg.message_id,
+                    text=f"⚠️ No search URLs generated for '{username}'"
+                )
+                return '', 200
+
+            for year, search_link in search_links:
+                total_pages = fetch_total_pages(search_link)
+                urls_to_process = split_url(search_link, *re.search(r"c\[newer_than\]=(\d{4}-\d{2}-\d{2})&c\[older_than\]=(\d{4}-\d{2}-\d{2})", search_link).groups()) if total_pages > MAX_PAGES_PER_SEARCH else [search_link]
+                
+                for url in urls_to_process:
+                    pages = fetch_total_pages(url)
+                    for page in range(1, pages + 1):
+                        if chat_id not in active_tasks:
+                            raise ScraperError("Task cancelled by user")
+                        post_links = scrape_post_links(f"{url}&page={page}")
+                        all_post_links.update(post_links)
+
+            if not all_post_links:
+                bot.edit_message_text(
+                    chat_id=chat_id,
+                    message_id=progress_msg.message_id,
+                    text=f"⚠️ No posts found for '{username}' ({start_year}-{end_year})"
+                )
+                return '', 200
+
+            futures = [
+                executor.submit(process_post, link, username, unique_images, unique_videos, unique_gifs)
+                for link in all_post_links
+            ]
+            active_tasks[chat_id] = (executor, futures)  # Update with actual futures
+
             processed_count = 0
             total_posts = len(all_post_links)
             for future in as_completed(futures):
@@ -414,7 +412,7 @@ def telegram_webhook():
                             chat_id=chat_id,
                             file_buffer=html_file,
                             filename=html_file.name,
-                            更新=caption=f"Found {len(items)} {file_type} for '{username}' ({start_year}-{end_year})"
+                            caption=f"Found {len(items)} {file_type} for '{username}' ({start_year}-{end_year})"
                         )
                         any_sent = True
 
@@ -441,8 +439,9 @@ def telegram_webhook():
             )
         finally:
             if chat_id in active_tasks:
+                executor, _ = active_tasks[chat_id]
                 del active_tasks[chat_id]
-            executor.shutdown(wait=False)
+                executor.shutdown(wait=False)
 
         return '', 200
     
@@ -458,7 +457,9 @@ def telegram_webhook():
         except:
             pass
         if chat_id in active_tasks:
+            executor, _ = active_tasks[chat_id]
             del active_tasks[chat_id]
+            executor.shutdown(wait=False)
         return '', 200
 
 @app.route('/health', methods=['GET'])
