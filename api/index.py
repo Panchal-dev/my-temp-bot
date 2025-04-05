@@ -24,10 +24,10 @@ error_log_file = os.path.join(merge_dir, "error.txt")
 os.makedirs(save_dir, exist_ok=True)
 os.makedirs(merge_dir, exist_ok=True)
 
-PROXY = {
-    "http": "http://ybmonqoz:tpcfq425wvfw@38.153.152.244:9594",
-    "https": "http://ybmonqoz:tpcfq425wvfw@38.153.152.244:9594"
-}
+# PROXY = {
+#     "http": "http://ybmonqoz:tpcfq425wvfw@38.153.152.244:9594",
+#     "https": "http://ybmonqoz:tpcfq425wvfw@38.153.152.244:9594"
+# }
 
 unique_images = set()
 
@@ -59,7 +59,7 @@ def generate_links(start_year, end_year, username):
 def fetch_total_pages(url, max_retries=3):
     for attempt in range(max_retries):
         try:
-            response = requests.get(url, timeout=5, proxies=PROXY)
+            response = requests.get(url, timeout=5) #, proxies=PROXY
             response.raise_for_status()
             soup = BeautifulSoup(response.text, 'html.parser')
             pagination = soup.find('div', class_='pageNav')
@@ -73,7 +73,7 @@ def fetch_total_pages(url, max_retries=3):
 
 def scrape_post_links(search_url):
     try:
-        response = requests.get(search_url, timeout=5, proxies=PROXY)
+        response = requests.get(search_url, timeout=5) #, proxies=PROXY
         response.raise_for_status()
         soup = BeautifulSoup(response.text, 'html.parser')
         return list(dict.fromkeys(urljoin(base_url, link['href']) for link in soup.find_all('a', href=True) 
@@ -92,7 +92,7 @@ def add_media(media_url, year):
 
 def process_post(post_link, year, username):
     try:
-        response = requests.get(post_link, timeout=5, proxies=PROXY)
+        response = requests.get(post_link, timeout=5) #, proxies=PROXY
         response.raise_for_status()
         soup = BeautifulSoup(response.text, 'html.parser')
         post_id = re.search(r'post-(\d+)', post_link).group(1) if re.search(r'post-(\d+)', post_link) else None
