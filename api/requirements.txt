@@ -1,5 +1,5 @@
 requests
 beautifulsoup4
-telegram
-python-telegram-bot
+python-telegram-bot==13.7
 flask
+urllib3

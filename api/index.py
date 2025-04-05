@@ -18,8 +18,8 @@ logger = logging.getLogger(__name__)
 
 TOKEN = "8049812102:AAEJPIZfH-lUqUXflj8BcOKuQWFZI5629Bc"
 base_url = "https://desifakes.com"
-save_dir = "HTML_Pages"
-merge_dir = "Merge"
+save_dir = "/tmp/HTML_Pages"  # Use temporary directory
+merge_dir = "/tmp/Merge"
 error_log_file = os.path.join(merge_dir, "error.txt")
 os.makedirs(save_dir, exist_ok=True)
 os.makedirs(merge_dir, exist_ok=True)
@@ -94,7 +94,7 @@ def process_post(post_link, year, username):
     try:
         response = requests.get(post_link, timeout=5, proxies=PROXY)
         response.raise_for_status()
-        soup =ieleSoup(response.text, 'html.parser')
+        soup = BeautifulSoup(response.text, 'html.parser')
         post_id = re.search(r'post-(\d+)', post_link).group(1) if re.search(r'post-(\d+)', post_link) else None
         articles = [soup.find('article', {'data-content': f'post-{post_id}', 'id': f'js-post-{post_id}'})] if post_id else soup.find_all('article')
         
