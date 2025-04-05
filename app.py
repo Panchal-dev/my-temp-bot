@@ -47,7 +47,7 @@ BASE_URL = "https://desifakes.com"
 class ScraperError(Exception):
     pass
 
-# Global dictionary to track active tasks per chat_id
+# Global task tracking
 active_tasks = {}
 
 def make_request(url, method='get', **kwargs):
@@ -104,7 +104,6 @@ def fetch_total_pages(url):
         pagination = soup.find('div', class_='pageNav')
         if not pagination:
             return 1
-            
         page_numbers = [int(link.text.strip()) for link in pagination.find_all('a') 
                        if link.text.strip().isdigit()]
         return max(page_numbers) if page_numbers else 1
@@ -117,7 +116,6 @@ def scrape_post_links(search_url):
         response = make_request(search_url)
         soup = BeautifulSoup(response.text, 'html.parser')
         links = set()
-        
         for link in soup.find_all('a', href=True):
             href = link['href']
             if ('threads/' in href and 
@@ -125,7 +123,6 @@ def scrape_post_links(search_url):
                 'page-' not in href):
                 full_url = urljoin(BASE_URL, href)
                 links.add(full_url)
-                
         return list(links)
     except Exception as e:
         logger.error(f"Failed to scrape post links: {str(e)}")
@@ -138,7 +135,6 @@ def process_post(post_link, username, unique_images, unique_videos, unique_gifs)
         
         post_id = re.search(r'post-(\d+)', post_link)
         articles = []
-        
         if post_id:
             article = soup.find('article', {
                 'data-content': f'post-{post_id.group(1)}',
@@ -161,12 +157,10 @@ def process_post(post_link, username, unique_images, unique_videos, unique_gifs)
             for img in article.find_all('img', src=True):
                 src = img['src']
                 full_src = urljoin(BASE_URL, src) if src.startswith("/") else src
-                
                 if (src.startswith("data:image") or 
                     "addonflare/awardsystem/icons/" in src or
                     any(kw in src.lower() for kw in ["avatars", "badge", "premium", "likes"])):
                     continue
-                    
                 if src.endswith(".gif") and full_src not in unique_gifs:
                     unique_gifs.add(full_src)
                     gifs.append(full_src)
@@ -187,22 +181,22 @@ def process_post(post_link, username, unique_images, unique_videos, unique_gifs)
         logger.error(f"Failed to process post {post_link}: {str(e)}")
         return [], [], []
 
-def create_html(file_type, items):
+def create_html(file_type, items, username):
     if not items:
         return None
         
     html_content = f"""<!DOCTYPE html><html><head>
-    <title>{file_type.capitalize()} Links</title>
+    <title>{username} - {file_type.capitalize()}</title>
     <meta charset="UTF-8">
     <style>
         body {{ font-family: Arial, sans-serif; margin: 20px; }}
         .item {{ margin: 20px 0; padding: 10px; border: 1px solid #eee; }}
-        img, video {{ max-width: 100%; height: auto; display: block; }}
+        img, video {{ max-width: 80%; height: auto; display: block; }}
         a {{ color: #0066cc; text-decoration: none; }}
     </style>
     </head>
     <body>
-    <h1>{file_type.capitalize()} ({len(items)})</h1>"""
+    <h1>{username} - {file_type.capitalize()} ({len(items)})</h1>"""
     
     for item in items:
         if file_type == "images":
@@ -242,12 +236,11 @@ def send_telegram_document(chat_id, file_buffer, filename, caption):
             time.sleep(1 * (attempt + 1))
 
 def cancel_task(chat_id):
-    """Cancel the active task for a given chat_id"""
     if chat_id in active_tasks:
         executor, futures = active_tasks[chat_id]
         for future in futures:
-            future.cancel()  # Attempt to cancel each future
-        executor.shutdown(wait=False)  # Shutdown the executor immediately
+            future.cancel()
+        executor.shutdown(wait=False)
         del active_tasks[chat_id]
         return True
     return False
@@ -271,7 +264,6 @@ def telegram_webhook():
             )
             return '', 200
 
-        # Handle /stop command
         if text.lower() == '/stop':
             if cancel_task(chat_id):
                 send_telegram_message(
@@ -287,7 +279,6 @@ def telegram_webhook():
                 )
             return '', 200
 
-        # Handle regular commands
         parts = text.split()
         if len(parts) < 1 or (parts[0] == '/start' and len(parts) < 2):
             send_telegram_message(
@@ -297,12 +288,6 @@ def telegram_webhook():
             )
             return '', 200
 
-        username = parts[1] if parts[0] == '/start' else parts[0]
-        title_only = parts[2].lower() == 'y' if len(parts) > 2 else False
-        start_year = int(parts[3]) if len(parts) > 3 else 2019
-        end_year = int(parts[4]) if len(parts) > 4 else datetime.now().year
-
-        # Check if there's already a task running
         if chat_id in active_tasks:
             send_telegram_message(
                 chat_id=chat_id,
@@ -311,11 +296,17 @@ def telegram_webhook():
             )
             return '', 200
 
+        username = parts[1] if parts[0] == '/start' else parts[0]
+        title_only = parts[2].lower() == 'y' if len(parts) > 2 else False
+        start_year = int(parts[3]) if len(parts) > 3 else 2019
+        end_year = int(parts[4]) if len(parts) > 4 else datetime.now().year
+
         progress_msg = send_telegram_message(
             chat_id=chat_id,
             text=f"🔍 Searching for {username} ({start_year}-{end_year})..."
         )
 
+        # Initialize sets for this specific task
         unique_images, unique_videos, unique_gifs = set(), set(), set()
         all_post_links = set()
         
@@ -331,7 +322,6 @@ def telegram_webhook():
         for year, search_link in search_links:
             total_pages = fetch_total_pages(search_link)
             pages_to_scrape = min(total_pages, MAX_PAGES_PER_SEARCH)
-            
             for page in range(1, pages_to_scrape + 1):
                 post_links = scrape_post_links(f"{search_link}&page={page}")
                 all_post_links.update(post_links)
@@ -344,21 +334,28 @@ def telegram_webhook():
             )
             return '', 200
 
-        # Create a new executor for this task
         executor = ThreadPoolExecutor(max_workers=MAX_WORKERS)
         futures = [
             executor.submit(process_post, link, username, unique_images, unique_videos, unique_gifs)
             for link in all_post_links
         ]
         
-        # Store the task
         active_tasks[chat_id] = (executor, futures)
 
         try:
+            processed_count = 0
+            total_posts = len(all_post_links)
             for future in as_completed(futures):
                 if future.cancelled():
                     raise ScraperError("Task cancelled by user")
                 future.result()
+                processed_count += 1
+                if processed_count % 10 == 0:  # Update progress every 10 posts
+                    bot.edit_message_text(
+                        chat_id=chat_id,
+                        message_id=progress_msg.message_id,
+                        text=f"🔍 Processing {username} ({start_year}-{end_year}): {processed_count}/{total_posts} posts"
+                    )
 
             results = {
                 "images": list(unique_images),
@@ -371,7 +368,7 @@ def telegram_webhook():
             any_sent = False
             for file_type, items in results.items():
                 if items:
-                    html_content = create_html(file_type, items)
+                    html_content = create_html(file_type, items, username)
                     if html_content:
                         html_file = BytesIO(html_content.encode('utf-8'))
                         html_file.name = f"{username}_{file_type}.html"
@@ -380,7 +377,7 @@ def telegram_webhook():
                             chat_id=chat_id,
                             file_buffer=html_file,
                             filename=html_file.name,
-                            caption=f"Found {len(items)} {file_type} for {username}"
+                            caption=f"Found {len(items)} {file_type} for {username} ({start_year}-{end_year})"
                         )
                         any_sent = True
 
@@ -399,8 +396,13 @@ def telegram_webhook():
                 )
             else:
                 raise
+        except Exception as e:
+            bot.edit_message_text(
+                chat_id=chat_id,
+                message_id=progress_msg.message_id,
+                text=f"❌ Error: {str(e)}"
+            )
         finally:
-            # Clean up the task
             if chat_id in active_tasks:
                 del active_tasks[chat_id]
             executor.shutdown(wait=True)
