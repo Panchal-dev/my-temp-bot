@@ -154,7 +154,7 @@ def scrape_post_links(search_url):
         logger.error(f"Failed to scrape post links: {str(e)}")
         return []
 
-def process_post(post_link, username, year, media_by_year):
+def process_post(post_link, username, unique_images, unique_videos, unique_gifs):
     try:
         response = make_request(post_link)
         soup = BeautifulSoup(response.text, 'html.parser')
@@ -178,6 +178,7 @@ def process_post(post_link, username, year, media_by_year):
                username_lower in article.get('data-author', '').lower()
         ]
         
+        images, videos, gifs = [], [], []
         for article in filtered_articles:
             for img in article.find_all('img', src=True):
                 src = img['src']
@@ -186,29 +187,30 @@ def process_post(post_link, username, year, media_by_year):
                     "addonflare/awardsystem/icons/" in src or
                     any(kw in src.lower() for kw in ["avatars", "ozzmodz_badges_badge", "premium", "likes"])):
                     continue
-                if src.endswith(".gif"):
-                    media_by_year['gifs'].setdefault(year, set()).add(full_src)
-                else:
-                    media_by_year['images'].setdefault(year, set()).add(full_src)
+                if src.endswith(".gif") and full_src not in unique_gifs:
+                    unique_gifs.add(full_src)
+                    gifs.append(full_src)
+                elif full_src not in unique_images:
+                    unique_images.add(full_src)
+                    images.append(full_src)
             
             for media in [*article.find_all('video', src=True), 
                          *article.find_all('source', src=True)]:
                 src = media['src']
                 full_src = urljoin(BASE_URL, src) if src.startswith("/") else src
-                media_by_year['videos'].setdefault(year, set()).add(full_src)
+                if full_src not in unique_videos:
+                    unique_videos.add(full_src)
+                    videos.append(full_src)
         
-        return True
+        return images, videos, gifs
     except Exception as e:
         logger.error(f"Failed to process post {post_link}: {str(e)}")
-        return False
+        return [], [], []
 
-def create_html(file_type, media_by_year, username, start_year, end_year):
-    items_by_year = media_by_year.get(file_type, {})
-    if not items_by_year:
+def create_html(file_type, items, username, start_year, end_year):
+    if not items:
         return None
-    
-    # Sort years in descending order
-    sorted_years = sorted(items_by_year.keys(), reverse=True)
+        
     html_content = f"""<!DOCTYPE html><html><head>
     <title>{username} - {file_type.capitalize()} Links</title>
     <meta charset="UTF-8">
@@ -221,15 +223,13 @@ def create_html(file_type, media_by_year, username, start_year, end_year):
     <body>
     <h1>{username} - {file_type.capitalize()} Links ({start_year}-{end_year})</h1>"""
     
-    for year in sorted_years:
-        html_content += f"<h2>{year}</h2>"
-        for item in items_by_year[year]:
-            if file_type == "images":
-                html_content += f'<div><img src="{item}" alt="Image" style="max-width:80%;height:auto;"></div>'
-            elif file_type == "videos":
-                html_content += f'<p><video controls style="max-width:100%;"><source src="{item}" type="video/mp4"></video></p>'
-            elif file_type == "gifs":
-                html_content += f'<p><a href="{item}" target="_blank">View GIF</a></p>'
+    for item in items:
+        if file_type == "images":
+            html_content += f'<div><img src="{item}" alt="Image" style="max-width:80%;height:auto;"></div>'
+        elif file_type == "videos":
+            html_content += f'<p><video controls style="max-width:100%;"><source src="{item}" type="video/mp4"></video></p>'
+        elif file_type == "gifs":
+            html_content += f'<p><a href="{item}" target="_blank">View GIF</a></p>'
     
     html_content += "</body></html>"
     return html_content
@@ -352,9 +352,8 @@ def telegram_webhook():
         active_tasks[chat_id] = (executor, [])
 
         try:
-            # Store media by year
-            media_by_year = {'images': {}, 'videos': {}, 'gifs': {}}
-            all_post_links_by_year = {}
+            unique_images, unique_videos, unique_gifs = set(), set(), set()
+            all_post_links = set()
             
             search_links = generate_links(start_year, end_year, username, title_only)
             if not search_links:
@@ -369,16 +368,15 @@ def telegram_webhook():
                 total_pages = fetch_total_pages(search_link)
                 urls_to_process = split_url(search_link, *re.search(r"c\[newer_than\]=(\d{4}-\d{2}-\d{2})&c\[older_than\]=(\d{4}-\d{2}-\d{2})", search_link).groups()) if total_pages > MAX_PAGES_PER_SEARCH else [search_link]
                 
-                all_post_links_by_year[year] = set()
                 for url in urls_to_process:
                     pages = fetch_total_pages(url)
                     for page in range(1, pages + 1):
                         if chat_id not in active_tasks:
                             raise ScraperError("Task cancelled by user")
                         post_links = scrape_post_links(f"{url}&page={page}")
-                        all_post_links_by_year[year].update(post_links)
+                        all_post_links.update(post_links)
 
-            if not any(all_post_links_by_year.values()):
+            if not all_post_links:
                 bot.edit_message_text(
                     chat_id=chat_id,
                     message_id=progress_msg.message_id,
@@ -386,15 +384,14 @@ def telegram_webhook():
                 )
                 return '', 200
 
-            futures = []
-            for year, post_links in all_post_links_by_year.items():
-                for link in post_links:
-                    futures.append(executor.submit(process_post, link, username, year, media_by_year))
-            
+            futures = [
+                executor.submit(process_post, link, username, unique_images, unique_videos, unique_gifs)
+                for link in all_post_links
+            ]
             active_tasks[chat_id] = (executor, futures)
 
             processed_count = 0
-            total_posts = sum(len(links) for links in all_post_links_by_year.values())
+            total_posts = len(all_post_links)
             for future in as_completed(futures):
                 if chat_id not in active_tasks:
                     raise ScraperError("Task cancelled by user")
@@ -407,23 +404,29 @@ def telegram_webhook():
                         text=f"🔍 Processing '{username}' ({start_year}-{end_year}): {processed_count}/{total_posts} posts"
                     )
 
+            results = {
+                "images": list(unique_images),
+                "videos": list(unique_videos),
+                "gifs": list(unique_gifs)
+            }
+            
             bot.delete_message(chat_id=chat_id, message_id=progress_msg.message_id)
             
             any_sent = False
-            for file_type in ['images', 'videos', 'gifs']:
-                html_content = create_html(file_type, media_by_year, username, start_year, end_year)
-                if html_content:
-                    html_file = BytesIO(html_content.encode('utf-8'))
-                    html_file.name = f"{username.replace(' ', '_')}_{file_type}.html"
-                    total_items = sum(len(items) for items in media_by_year[file_type].values())
-                    
-                    send_telegram_document(
-                        chat_id=chat_id,
-                        file_buffer=html_file,
-                        filename=html_file.name,
-                        caption=f"Found {total_items} {file_type} for '{username}' ({start_year}-{end_year})"
-                    )
-                    any_sent = True
+            for file_type, items in results.items():
+                if items:
+                    html_content = create_html(file_type, items, username, start_year, end_year)
+                    if html_content:
+                        html_file = BytesIO(html_content.encode('utf-8'))
+                        html_file.name = f"{username.replace(' ', '_')}_{file_type}.html"
+                        
+                        send_telegram_document(
+                            chat_id=chat_id,
+                            file_buffer=html_file,
+                            filename=html_file.name,
+                            caption=f"Found {len(items)} {file_type} for '{username}' ({start_year}-{end_year})"
+                        )
+                        any_sent = True
 
             if not any_sent:
                 send_telegram_message(
