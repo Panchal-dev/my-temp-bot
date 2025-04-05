@@ -38,8 +38,8 @@ except Exception as e:
     raise
 
 PROXY = {
-    "http": "http://ybmonqoz:tpcfq425wvfw@38.153.152.244:9594",
-    "https": "http://ybmonqoz:tpcfq425wvfw@38.153.152.244:9594"
+    "http": "http://kigxipuw:4p9dfn30rig0@38.153.152.244:9594",
+    "https": "http://kigxipuw:4p9dfn30rig0@38.153.152.244:9594"
 }
 
 BASE_URL = "https://desifakes.com"
