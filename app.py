@@ -11,6 +11,7 @@ import telebot
 from datetime import datetime, timedelta
 import traceback
 import time
+from collections import defaultdict
 
 # Initialize logging
 logging.basicConfig(
@@ -23,9 +24,10 @@ app = Flask(__name__)
 
 # Configuration
 MAX_RETRIES = 3
-REQUEST_TIMEOUT = 10
-MAX_WORKERS = 5
-MAX_PAGES_PER_SEARCH = 10
+REQUEST_TIMEOUT = 15  # Increased timeout for better reliability
+MAX_WORKERS = 8       # Increased workers for faster processing
+MAX_PAGES_PER_SEARCH = 15  # Increased pages per search
+DEDUPE_CACHE_SIZE = 10000  # Size of URL deduplication cache
 
 try:
     TELEGRAM_BOT_TOKEN = os.environ['TELEGRAM_BOT_TOKEN']
@@ -47,8 +49,9 @@ BASE_URL = "https://desifakes.com"
 class ScraperError(Exception):
     pass
 
-# Global task tracking
+# Global task tracking and deduplication
 active_tasks = {}
+seen_urls = set()  # Global URL deduplication cache
 
 # Allowed chat IDs
 ALLOWED_CHAT_IDS = {5809601894, 1285451259}
@@ -97,7 +100,7 @@ def generate_links(start_year, end_year, username, title_only=False):
                 f"&c[title_only]={1 if title_only else 0}"
                 "&o=date"
             )
-            links.append((year, url))
+            links.append((year, url, f"{year}-{start_month}", f"{year}-{end_month}"))
     return links
 
 def split_url(url, start_date, end_date, max_pages=MAX_PAGES_PER_SEARCH):
@@ -148,14 +151,33 @@ def scrape_post_links(search_url):
                 not href.startswith('#') and 
                 'page-' not in href):
                 full_url = urljoin(BASE_URL, href)
-                links.add(full_url)
+                if full_url not in seen_urls:
+                    links.add(full_url)
+                    seen_urls.add(full_url)
+                    if len(seen_urls) > DEDUPE_CACHE_SIZE:
+                        seen_urls.clear()
         return list(links)
     except Exception as e:
         logger.error(f"Failed to scrape post links: {str(e)}")
         return []
 
-def process_post(post_link, username, year, media_by_year):
+def extract_post_date(post_link):
     try:
+        response = make_request(post_link)
+        soup = BeautifulSoup(response.text, 'html.parser')
+        time_tag = soup.find('time')
+        if time_tag and 'datetime' in time_tag.attrs:
+            return datetime.strptime(time_tag['datetime'], "%Y-%m-%dT%H:%M:%S%z").date()
+    except Exception as e:
+        logger.error(f"Failed to extract date from {post_link}: {str(e)}")
+    return None
+
+def process_post(post_link, username, media_by_date):
+    try:
+        post_date = extract_post_date(post_link)
+        if not post_date:
+            return
+
         response = make_request(post_link)
         soup = BeautifulSoup(response.text, 'html.parser')
         
@@ -179,6 +201,9 @@ def process_post(post_link, username, year, media_by_year):
         ]
         
         for article in filtered_articles:
+            # Deduplicate media URLs within the same post
+            post_media = {'images': set(), 'videos': set(), 'gifs': set()}
+            
             for img in article.find_all('img', src=True):
                 src = img['src']
                 full_src = urljoin(BASE_URL, src) if src.startswith("/") else src
@@ -187,49 +212,166 @@ def process_post(post_link, username, year, media_by_year):
                     any(kw in src.lower() for kw in ["avatars", "ozzmodz_badges_badge", "premium", "likes"])):
                     continue
                 if src.endswith(".gif"):
-                    media_by_year[year]['gifs'].add(full_src)
+                    post_media['gifs'].add(full_src)
                 else:
-                    media_by_year[year]['images'].add(full_src)
+                    post_media['images'].add(full_src)
             
             for media in [*article.find_all('video', src=True), 
                          *article.find_all('source', src=True)]:
                 src = media['src']
                 full_src = urljoin(BASE_URL, src) if src.startswith("/") else src
-                media_by_year[year]['videos'].add(full_src)
+                post_media['videos'].add(full_src)
+            
+            # Add to global storage only if not empty
+            for media_type, urls in post_media.items():
+                if urls:
+                    media_by_date[post_date][media_type].update(urls)
         
     except Exception as e:
         logger.error(f"Failed to process post {post_link}: {str(e)}")
 
-def create_html(file_type, media_by_year, username, start_year, end_year):
+def create_html(file_type, media_by_date, username, start_year, end_year):
     html_content = f"""<!DOCTYPE html><html><head>
     <title>{username} - {file_type.capitalize()} Links</title>
     <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <style>
-        body {{ font-family: Arial, sans-serif; margin: 20px; }}
-        img {{ max-width: 80%; height: auto; }}
-        video {{ max-width: 100%; }}
+        body {{ 
+            font-family: Arial, sans-serif; 
+            margin: 20px; 
+            line-height: 1.6;
+        }}
+        h1 {{ color: #2c3e50; }}
+        h2 {{ color: #3498db; margin-top: 30px; }}
+        h3 {{ color: #16a085; margin-top: 20px; }}
+        .date-section {{ 
+            margin-bottom: 30px; 
+            border-bottom: 1px solid #ecf0f1; 
+            padding-bottom: 15px; 
+        }}
+        .date-header {{ 
+            font-size: 1.1em; 
+            font-weight: bold; 
+            margin-bottom: 10px; 
+            color: #7f8c8d;
+        }}
+        .media-container {{ 
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(250px, 1fr));
+            gap: 15px;
+            margin-bottom: 15px;
+        }}
+        .media-item {{ 
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            padding: 5px;
+            background: #f9f9f9;
+        }}
+        .media-item img {{
+            max-width: 100%;
+            height: auto;
+            display: block;
+        }}
+        .media-item video {{
+            max-width: 100%;
+            display: block;
+        }}
+        .gif-link {{
+            display: block;
+            padding: 10px;
+            background: #3498db;
+            color: white;
+            text-align: center;
+            text-decoration: none;
+            border-radius: 4px;
+        }}
+        .gif-link:hover {{
+            background: #2980b9;
+        }}
+        .summary {{
+            background: #f8f9fa;
+            padding: 15px;
+            border-radius: 4px;
+            margin-bottom: 20px;
+        }}
     </style>
     </head>
     <body>
-    <h1>{username} - {file_type.capitalize()} Links ({start_year}-{end_year})</h1>"""
+    <div class="summary">
+        <h1>{username} - {file_type.capitalize()} Links ({start_year}-{end_year})</h1>
+        <p>Total {file_type}: {sum(len(items[file_type]) for items in media_by_date.values())}</p>
+    </div>"""
     
-    total_items = 0
-    years_descending = sorted(media_by_year.keys(), reverse=True)
-    for year in years_descending:
-        items = media_by_year[year][file_type]
+    # Group by year and month
+    year_month_groups = defaultdict(lambda: defaultdict(list))
+    for date in sorted(media_by_date.keys(), reverse=True):
+        items = media_by_date[date][file_type]
         if items:
-            html_content += f"<h2>{year}</h2>"
-            total_items += len(items)
-            for item in items:
-                if file_type == "images":
-                    html_content += f'<div><img src="{item}" alt="Image" style="max-width:80%;height:auto;"></div>'
-                elif file_type == "videos":
-                    html_content += f'<p><video controls style="max-width:100%;"><source src="{item}" type="video/mp4"></video></p>'
-                elif file_type == "gifs":
-                    html_content += f'<p><a href="{item}" target="_blank">View GIF</a></p>'
+            year_month_groups[date.year][date.month].append((date, items))
     
-    html_content += "</body></html>"
-    return html_content if total_items > 0 else None
+    # Generate HTML content in descending order
+    for year in sorted(year_month_groups.keys(), reverse=True):
+        html_content += f"<h2>{year}</h2>"
+        for month in sorted(year_month_groups[year].keys(), reverse=True):
+            month_name = datetime(year, month, 1).strftime("%B")
+            html_content += f"<h3>{month_name}</h3>"
+            
+            # Sort dates within month in descending order
+            for date, items in sorted(year_month_groups[year][month], key=lambda x: x[0], reverse=True):
+                date_str = date.strftime("%Y-%m-%d")
+                html_content += f"""
+                <div class="date-section">
+                    <div class="date-header">{date_str}</div>
+                    <div class="media-container">"""
+                
+                for item in items:
+                    if file_type == "images":
+                        html_content += f'''
+                        <div class="media-item">
+                            <img src="{item}" alt="Image" loading="lazy">
+                        </div>'''
+                    elif file_type == "videos":
+                        html_content += f'''
+                        <div class="media-item">
+                            <video controls>
+                                <source src="{item}" type="video/mp4">
+                                Your browser does not support the video tag.
+                            </video>
+                        </div>'''
+                    elif file_type == "gifs":
+                        html_content += f'''
+                        <div class="media-item">
+                            <a href="{item}" class="gif-link" target="_blank">View GIF</a>
+                        </div>'''
+                
+                html_content += "</div></div>"
+    
+    html_content += """
+    <script>
+        // Lazy loading for better performance
+        document.addEventListener("DOMContentLoaded", function() {
+            const lazyImages = [].slice.call(document.querySelectorAll("img[loading='lazy']"));
+            
+            if ("IntersectionObserver" in window) {
+                let lazyImageObserver = new IntersectionObserver(function(entries, observer) {
+                    entries.forEach(function(entry) {
+                        if (entry.isIntersecting) {
+                            let lazyImage = entry.target;
+                            lazyImage.src = lazyImage.dataset.src;
+                            lazyImageObserver.unobserve(lazyImage);
+                        }
+                    });
+                });
+
+                lazyImages.forEach(function(lazyImage) {
+                    lazyImageObserver.observe(lazyImage);
+                });
+            }
+        });
+    </script>
+    </body></html>"""
+    
+    return html_content if any(len(items[file_type]) > 0 for items in media_by_date.values()) else None
 
 def send_telegram_message(chat_id, text, **kwargs):
     for attempt in range(MAX_RETRIES):
@@ -249,7 +391,8 @@ def send_telegram_document(chat_id, file_buffer, filename, caption):
                 chat_id=chat_id,
                 document=file_buffer,
                 visible_file_name=filename,
-                caption=caption[:1024]
+                caption=caption[:1024],
+                timeout=30
             )
         except Exception as e:
             logger.warning(f"Attempt {attempt + 1} failed to send document: {str(e)}")
@@ -269,6 +412,9 @@ def cancel_task(chat_id):
 
 @app.route('/telegram', methods=['POST'])
 def telegram_webhook():
+    global seen_urls
+    seen_urls = set()  # Reset URL cache for each new request
+    
     try:
         update = request.get_json()
         if not update or 'message' not in update:
@@ -347,9 +493,8 @@ def telegram_webhook():
         active_tasks[chat_id] = (executor, [])
 
         try:
-            # Store media by year
-            media_by_year = {year: {'images': set(), 'videos': set(), 'gifs': set()} 
-                           for year in range(start_year, end_year + 1)}
+            # Store media by date
+            media_by_date = defaultdict(lambda: {'images': set(), 'videos': set(), 'gifs': set()})
             all_post_links = set()
             
             search_links = generate_links(start_year, end_year, username, title_only)
@@ -361,17 +506,30 @@ def telegram_webhook():
                 )
                 return '', 200
 
-            for year, search_link in search_links:
+            # First pass: collect all post links
+            for year, search_link, start_date, end_date in search_links:
                 total_pages = fetch_total_pages(search_link)
-                urls_to_process = split_url(search_link, *re.search(r"c\[newer_than\]=(\d{4}-\d{2}-\d{2})&c\[older_than\]=(\d{4}-\d{2}-\d{2})", search_link).groups()) if total_pages > MAX_PAGES_PER_SEARCH else [search_link]
+                urls_to_process = split_url(search_link, start_date, end_date) if total_pages > MAX_PAGES_PER_SEARCH else [search_link]
                 
                 for url in urls_to_process:
-                    pages = fetch_total_pages(url)
+                    pages = min(fetch_total_pages(url), MAX_PAGES_PER_SEARCH)
                     for page in range(1, pages + 1):
                         if chat_id not in active_tasks:
                             raise ScraperError("Task cancelled by user")
-                        post_links = scrape_post_links(f"{url}&page={page}")
-                        all_post_links.update(post_links)
+                        
+                        try:
+                            post_links = scrape_post_links(f"{url}&page={page}")
+                            all_post_links.update(post_links)
+                            
+                            # Update progress
+                            bot.edit_message_text(
+                                chat_id=chat_id,
+                                message_id=progress_msg.message_id,
+                                text=f"🔍 Found {len(all_post_links)} posts for '{username}' ({start_year}-{end_year})"
+                            )
+                        except Exception as e:
+                            logger.error(f"Error scraping page {page} of {url}: {str(e)}")
+                            continue
 
             if not all_post_links:
                 bot.edit_message_text(
@@ -381,43 +539,68 @@ def telegram_webhook():
                 )
                 return '', 200
 
-            futures = [
-                executor.submit(process_post, link, username, year, media_by_year)
-                for year, _ in search_links for link in all_post_links
-            ]
+            # Second pass: process all posts
+            futures = []
+            batch_size = 50
+            post_list = list(all_post_links)
+            
+            for i in range(0, len(post_list), batch_size):
+                batch = post_list[i:i + batch_size]
+                futures.append(
+                    executor.submit(
+                        lambda posts: [process_post(post, username, media_by_date) for post in posts],
+                        batch
+                    )
+                )
+            
             active_tasks[chat_id] = (executor, futures)
 
             processed_count = 0
-            total_posts = len(all_post_links) * len(search_links)
+            total_posts = len(post_list)
+            last_update = 0
+            
             for future in as_completed(futures):
                 if chat_id not in active_tasks:
                     raise ScraperError("Task cancelled by user")
+                
                 future.result()
-                processed_count += 1
-                if processed_count % 10 == 0 or processed_count == total_posts:
+                processed_count += len(batch)
+                
+                # Update progress every 10% or when completed
+                progress_percent = int((processed_count / total_posts) * 100)
+                if progress_percent >= last_update + 10 or processed_count == total_posts:
+                    last_update = progress_percent
                     bot.edit_message_text(
                         chat_id=chat_id,
                         message_id=progress_msg.message_id,
-                        text=f"🔍 Processing '{username}' ({start_year}-{end_year}): {processed_count}/{total_posts} posts"
+                        text=f"🔍 Processing '{username}' ({start_year}-{end_year}): {processed_count}/{total_posts} posts ({progress_percent}%)"
                     )
 
             bot.delete_message(chat_id=chat_id, message_id=progress_msg.message_id)
             
+            # Generate and send results
             any_sent = False
             for file_type in ["images", "videos", "gifs"]:
-                html_content = create_html(file_type, media_by_year, username, start_year, end_year)
+                html_content = create_html(file_type, media_by_date, username, start_year, end_year)
                 if html_content:
                     html_file = BytesIO(html_content.encode('utf-8'))
-                    html_file.name = f"{username.replace(' ', '_')}_{file_type}.html"
-                    total_items = sum(len(media_by_year[year][file_type]) for year in media_by_year)
+                    html_file.name = f"{username.replace(' ', '_')}_{file_type}_{start_year}-{end_year}.html"
+                    total_items = sum(len(items[file_type]) for items in media_by_date.values())
                     
-                    send_telegram_document(
-                        chat_id=chat_id,
-                        file_buffer=html_file,
-                        filename=html_file.name,
-                        caption=f"Found {total_items} {file_type} for '{username}' ({start_year}-{end_year})"
-                    )
-                    any_sent = True
+                    try:
+                        send_telegram_document(
+                            chat_id=chat_id,
+                            file_buffer=html_file,
+                            filename=html_file.name,
+                            caption=f"Found {total_items} {file_type} for '{username}' ({start_year}-{end_year})"
+                        )
+                        any_sent = True
+                    except Exception as e:
+                        logger.error(f"Failed to send {file_type} document: {str(e)}")
+                        send_telegram_message(
+                            chat_id=chat_id,
+                            text=f"⚠️ Failed to send {file_type} results for '{username}'"
+                        )
 
             if not any_sent:
                 send_telegram_message(
@@ -433,12 +616,18 @@ def telegram_webhook():
                     text=f"🛑 Scraping stopped for '{username}'"
                 )
             else:
-                raise
+                logger.error(f"Scraper error: {str(e)}")
+                bot.edit_message_text(
+                    chat_id=chat_id,
+                    message_id=progress_msg.message_id,
+                    text=f"❌ Error processing '{username}': {str(e)}"
+                )
         except Exception as e:
+            logger.error(f"Unexpected error: {str(e)}\n{traceback.format_exc()}")
             bot.edit_message_text(
                 chat_id=chat_id,
                 message_id=progress_msg.message_id,
-                text=f"❌ Error for '{username}': {str(e)}"
+                text=f"❌ Unexpected error for '{username}': {str(e)}"
             )
         finally:
             if chat_id in active_tasks:
@@ -455,7 +644,7 @@ def telegram_webhook():
                 bot.edit_message_text(
                     chat_id=chat_id,
                     message_id=progress_msg.message_id,
-                    text=f"❌ Error: {str(e)}"
+                    text=f"❌ Critical error: {str(e)}"
                 )
         except:
             pass
@@ -467,8 +656,14 @@ def telegram_webhook():
 
 @app.route('/health', methods=['GET'])
 def health_check():
-    return jsonify({"status": "healthy", "time": datetime.now().isoformat()})
+    return jsonify({
+        "status": "healthy",
+        "time": datetime.now().isoformat(),
+        "active_tasks": len(active_tasks),
+        "memory_usage": f"{os.getpid()} - {psutil.Process(os.getpid()).memory_info().rss / 1024 / 1024:.2f}MB"
+    })
 
 if __name__ == "__main__":
+    import psutil
     port = int(os.environ.get("PORT", 8080))
-    app.run(host="0.0.0.0", port=port)
+    app.run(host="0.0.0.0", port=port, threaded=True)
