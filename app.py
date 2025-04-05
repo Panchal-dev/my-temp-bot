@@ -11,7 +11,6 @@ import telebot
 from datetime import datetime, timedelta
 import traceback
 import time
-from collections import defaultdict
 
 # Initialize logging
 logging.basicConfig(
@@ -98,7 +97,7 @@ def generate_links(start_year, end_year, username, title_only=False):
                 f"&c[title_only]={1 if title_only else 0}"
                 "&o=date"
             )
-            links.append((year, url, f"{year}-{start_month}", f"{year}-{end_month}"))
+            links.append((year, url))
     return links
 
 def split_url(url, start_date, end_date, max_pages=MAX_PAGES_PER_SEARCH):
@@ -155,23 +154,8 @@ def scrape_post_links(search_url):
         logger.error(f"Failed to scrape post links: {str(e)}")
         return []
 
-def extract_post_date(post_link):
+def process_post(post_link, username, year, media_by_year):
     try:
-        response = make_request(post_link)
-        soup = BeautifulSoup(response.text, 'html.parser')
-        time_tag = soup.find('time')
-        if time_tag and 'datetime' in time_tag.attrs:
-            return datetime.strptime(time_tag['datetime'], "%Y-%m-%dT%H:%M:%S%z").date()
-    except Exception as e:
-        logger.error(f"Failed to extract date from {post_link}: {str(e)}")
-    return None
-
-def process_post(post_link, username, year, media_by_date):
-    try:
-        post_date = extract_post_date(post_link)
-        if not post_date:
-            return
-
         response = make_request(post_link)
         soup = BeautifulSoup(response.text, 'html.parser')
         
@@ -203,20 +187,20 @@ def process_post(post_link, username, year, media_by_date):
                     any(kw in src.lower() for kw in ["avatars", "ozzmodz_badges_badge", "premium", "likes"])):
                     continue
                 if src.endswith(".gif"):
-                    media_by_date[post_date]['gifs'].add(full_src)
+                    media_by_year[year]['gifs'].add(full_src)
                 else:
-                    media_by_date[post_date]['images'].add(full_src)
+                    media_by_year[year]['images'].add(full_src)
             
             for media in [*article.find_all('video', src=True), 
                          *article.find_all('source', src=True)]:
                 src = media['src']
                 full_src = urljoin(BASE_URL, src) if src.startswith("/") else src
-                media_by_date[post_date]['videos'].add(full_src)
+                media_by_year[year]['videos'].add(full_src)
         
     except Exception as e:
         logger.error(f"Failed to process post {post_link}: {str(e)}")
 
-def create_html(file_type, media_by_date, username, start_year, end_year):
+def create_html(file_type, media_by_year, username, start_year, end_year):
     html_content = f"""<!DOCTYPE html><html><head>
     <title>{username} - {file_type.capitalize()} Links</title>
     <meta charset="UTF-8">
@@ -224,49 +208,25 @@ def create_html(file_type, media_by_date, username, start_year, end_year):
         body {{ font-family: Arial, sans-serif; margin: 20px; }}
         img {{ max-width: 80%; height: auto; }}
         video {{ max-width: 100%; }}
-        .date-section {{ margin-bottom: 30px; border-bottom: 1px solid #ccc; padding-bottom: 10px; }}
-        .date-header {{ font-size: 1.2em; font-weight: bold; margin-bottom: 10px; }}
-        .media-container {{ display: flex; flex-wrap: wrap; gap: 10px; margin-bottom: 15px; }}
-        .media-item {{ flex: 1 1 200px; }}
     </style>
     </head>
     <body>
     <h1>{username} - {file_type.capitalize()} Links ({start_year}-{end_year})</h1>"""
     
     total_items = 0
-    
-    # Group by year and month
-    year_month_groups = defaultdict(lambda: defaultdict(list))
-    for date in sorted(media_by_date.keys(), reverse=True):
-        items = media_by_date[date][file_type]
+    years_descending = sorted(media_by_year.keys(), reverse=True)
+    for year in years_descending:
+        items = media_by_year[year][file_type]
         if items:
-            year_month_groups[date.year][date.month].extend((date, items))
-    
-    # Generate HTML content in descending order
-    for year in sorted(year_month_groups.keys(), reverse=True):
-        html_content += f"<h2>{year}</h2>"
-        for month in sorted(year_month_groups[year].keys(), reverse=True):
-            month_name = datetime(year, month, 1).strftime("%B")
-            html_content += f"<h3>{month_name}</h3>"
-            
-            # Sort dates within month in descending order
-            for date, items in sorted(year_month_groups[year][month], key=lambda x: x[0], reverse=True):
-                date_str = date.strftime("%Y-%m-%d")
-                html_content += f"""
-                <div class="date-section">
-                    <div class="date-header">{date_str}</div>
-                    <div class="media-container">"""
-                
-                for item in items:
-                    total_items += 1
-                    if file_type == "images":
-                        html_content += f'<div class="media-item"><img src="{item}" alt="Image" style="max-width:100%;height:auto;"></div>'
-                    elif file_type == "videos":
-                        html_content += f'<div class="media-item"><video controls style="max-width:100%;"><source src="{item}" type="video/mp4"></video></div>'
-                    elif file_type == "gifs":
-                        html_content += f'<div class="media-item"><a href="{item}" target="_blank">View GIF</a></div>'
-                
-                html_content += "</div></div>"
+            html_content += f"<h2>{year}</h2>"
+            total_items += len(items)
+            for item in items:
+                if file_type == "images":
+                    html_content += f'<div><img src="{item}" alt="Image" style="max-width:80%;height:auto;"></div>'
+                elif file_type == "videos":
+                    html_content += f'<p><video controls style="max-width:100%;"><source src="{item}" type="video/mp4"></video></p>'
+                elif file_type == "gifs":
+                    html_content += f'<p><a href="{item}" target="_blank">View GIF</a></p>'
     
     html_content += "</body></html>"
     return html_content if total_items > 0 else None
@@ -387,8 +347,9 @@ def telegram_webhook():
         active_tasks[chat_id] = (executor, [])
 
         try:
-            # Store media by date
-            media_by_date = defaultdict(lambda: {'images': set(), 'videos': set(), 'gifs': set()})
+            # Store media by year
+            media_by_year = {year: {'images': set(), 'videos': set(), 'gifs': set()} 
+                           for year in range(start_year, end_year + 1)}
             all_post_links = set()
             
             search_links = generate_links(start_year, end_year, username, title_only)
@@ -400,9 +361,9 @@ def telegram_webhook():
                 )
                 return '', 200
 
-            for year, search_link, start_date, end_date in search_links:
+            for year, search_link in search_links:
                 total_pages = fetch_total_pages(search_link)
-                urls_to_process = split_url(search_link, start_date, end_date) if total_pages > MAX_PAGES_PER_SEARCH else [search_link]
+                urls_to_process = split_url(search_link, *re.search(r"c\[newer_than\]=(\d{4}-\d{2}-\d{2})&c\[older_than\]=(\d{4}-\d{2}-\d{2})", search_link).groups()) if total_pages > MAX_PAGES_PER_SEARCH else [search_link]
                 
                 for url in urls_to_process:
                     pages = fetch_total_pages(url)
@@ -421,13 +382,13 @@ def telegram_webhook():
                 return '', 200
 
             futures = [
-                executor.submit(process_post, link, username, year, media_by_date)
-                for link in all_post_links
+                executor.submit(process_post, link, username, year, media_by_year)
+                for year, _ in search_links for link in all_post_links
             ]
             active_tasks[chat_id] = (executor, futures)
 
             processed_count = 0
-            total_posts = len(all_post_links)
+            total_posts = len(all_post_links) * len(search_links)
             for future in as_completed(futures):
                 if chat_id not in active_tasks:
                     raise ScraperError("Task cancelled by user")
@@ -444,11 +405,11 @@ def telegram_webhook():
             
             any_sent = False
             for file_type in ["images", "videos", "gifs"]:
-                html_content = create_html(file_type, media_by_date, username, start_year, end_year)
+                html_content = create_html(file_type, media_by_year, username, start_year, end_year)
                 if html_content:
                     html_file = BytesIO(html_content.encode('utf-8'))
                     html_file.name = f"{username.replace(' ', '_')}_{file_type}.html"
-                    total_items = sum(len(items[file_type]) for items in media_by_date.values())
+                    total_items = sum(len(media_by_year[year][file_type]) for year in media_by_year)
                     
                     send_telegram_document(
                         chat_id=chat_id,
