@@ -4,3 +4,4 @@ flask
 pytelegrambotapi
 tqdm
 colorama
+python-telegram-bot
