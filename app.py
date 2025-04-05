@@ -181,7 +181,7 @@ def process_post(post_link, username, unique_images, unique_videos, unique_gifs)
         logger.error(f"Failed to process post {post_link}: {str(e)}")
         return [], [], []
 
-def create_html(file_type, items, username):
+def create_html(file_type, items, username, start_year, end_year):
     if not items:
         return None
         
@@ -240,7 +240,7 @@ def cancel_task(chat_id):
         executor, futures = active_tasks[chat_id]
         for future in futures:
             future.cancel()
-        executor.shutdown(wait=False)
+        executor.shutdown(wait=False)  # Immediate shutdown
         del active_tasks[chat_id]
         return True
     return False
@@ -268,7 +268,7 @@ def telegram_webhook():
             if cancel_task(chat_id):
                 send_telegram_message(
                     chat_id=chat_id,
-                    text="✅ Scraping process stopped",
+                    text="✅ Scraping process stopped immediately",
                     reply_to_message_id=message_id
                 )
             else:
@@ -283,7 +283,7 @@ def telegram_webhook():
         if len(parts) < 1 or (parts[0] == '/start' and len(parts) < 2):
             send_telegram_message(
                 chat_id=chat_id,
-                text="Usage: username [title_only y/n] [start_year] [end_year]\nExample: Madhuri y 2020 2023\nUse /stop to cancel",
+                text="Usage: username [title_only y/n] [start_year] [end_year]\nExample: 'Madhuri Dixit' y 2020 2023\nUse /stop to cancel",
                 reply_to_message_id=message_id
             )
             return '', 200
@@ -296,17 +296,23 @@ def telegram_webhook():
             )
             return '', 200
 
-        username = parts[1] if parts[0] == '/start' else parts[0]
-        title_only = parts[2].lower() == 'y' if len(parts) > 2 else False
-        start_year = int(parts[3]) if len(parts) > 3 else 2019
-        end_year = int(parts[4]) if len(parts) > 4 else datetime.now().year
+        # Parse username correctly (allow spaces)
+        if parts[0] == '/start':
+            username = ' '.join(parts[1:-3]) if len(parts) > 4 else parts[1]
+            title_only_idx = 2 if len(parts) <= 4 else len(parts) - 3
+        else:
+            username = ' '.join(parts[:-3]) if len(parts) > 3 else parts[0]
+            title_only_idx = 1 if len(parts) <= 3 else len(parts) - 3
+        
+        title_only = parts[title_only_idx].lower() == 'y' if len(parts) > title_only_idx else False
+        start_year = int(parts[-2]) if len(parts) > 2 else 2019
+        end_year = int(parts[-1]) if len(parts) > 1 else datetime.now().year
 
         progress_msg = send_telegram_message(
             chat_id=chat_id,
-            text=f"🔍 Searching for {username} ({start_year}-{end_year})..."
+            text=f"🔍 Searching for '{username}' ({start_year}-{end_year})..."
         )
 
-        # Initialize sets for this specific task
         unique_images, unique_videos, unique_gifs = set(), set(), set()
         all_post_links = set()
         
@@ -315,7 +321,7 @@ def telegram_webhook():
             bot.edit_message_text(
                 chat_id=chat_id,
                 message_id=progress_msg.message_id,
-                text=f"⚠️ No search URLs generated for {username}"
+                text=f"⚠️ No search URLs generated for '{username}'"
             )
             return '', 200
 
@@ -323,6 +329,8 @@ def telegram_webhook():
             total_pages = fetch_total_pages(search_link)
             pages_to_scrape = min(total_pages, MAX_PAGES_PER_SEARCH)
             for page in range(1, pages_to_scrape + 1):
+                if chat_id not in active_tasks:  # Check if stopped
+                    raise ScraperError("Task cancelled by user")
                 post_links = scrape_post_links(f"{search_link}&page={page}")
                 all_post_links.update(post_links)
 
@@ -330,7 +338,7 @@ def telegram_webhook():
             bot.edit_message_text(
                 chat_id=chat_id,
                 message_id=progress_msg.message_id,
-                text=f"⚠️ No posts found for {username} ({start_year}-{end_year})"
+                text=f"⚠️ No posts found for '{username}' ({start_year}-{end_year})"
             )
             return '', 200
 
@@ -346,15 +354,15 @@ def telegram_webhook():
             processed_count = 0
             total_posts = len(all_post_links)
             for future in as_completed(futures):
-                if future.cancelled():
+                if chat_id not in active_tasks:  # Immediate stop check
                     raise ScraperError("Task cancelled by user")
                 future.result()
                 processed_count += 1
-                if processed_count % 10 == 0:  # Update progress every 10 posts
+                if processed_count % 10 == 0:
                     bot.edit_message_text(
                         chat_id=chat_id,
                         message_id=progress_msg.message_id,
-                        text=f"🔍 Processing {username} ({start_year}-{end_year}): {processed_count}/{total_posts} posts"
+                        text=f"🔍 Processing '{username}' ({start_year}-{end_year}): {processed_count}/{total_posts} posts"
                     )
 
             results = {
@@ -368,23 +376,23 @@ def telegram_webhook():
             any_sent = False
             for file_type, items in results.items():
                 if items:
-                    html_content = create_html(file_type, items, username)
+                    html_content = create_html(file_type, items, username, start_year, end_year)
                     if html_content:
                         html_file = BytesIO(html_content.encode('utf-8'))
-                        html_file.name = f"{username}_{file_type}.html"
+                        html_file.name = f"{username.replace(' ', '_')}_{file_type}.html"
                         
                         send_telegram_document(
                             chat_id=chat_id,
                             file_buffer=html_file,
                             filename=html_file.name,
-                            caption=f"Found {len(items)} {file_type} for {username} ({start_year}-{end_year})"
+                            caption=f"Found {len(items)} {file_type} for '{username}' ({start_year}-{end_year})"
                         )
                         any_sent = True
 
             if not any_sent:
                 send_telegram_message(
                     chat_id=chat_id,
-                    text=f"⚠️ No media found for {username} ({start_year}-{end_year})"
+                    text=f"⚠️ No media found for '{username}' ({start_year}-{end_year})"
                 )
 
         except ScraperError as e:
@@ -392,7 +400,7 @@ def telegram_webhook():
                 bot.edit_message_text(
                     chat_id=chat_id,
                     message_id=progress_msg.message_id,
-                    text="🛑 Scraping stopped by user"
+                    text=f"🛑 Scraping stopped for '{username}'"
                 )
             else:
                 raise
@@ -400,12 +408,12 @@ def telegram_webhook():
             bot.edit_message_text(
                 chat_id=chat_id,
                 message_id=progress_msg.message_id,
-                text=f"❌ Error: {str(e)}"
+                text=f"❌ Error for '{username}': {str(e)}"
             )
         finally:
             if chat_id in active_tasks:
                 del active_tasks[chat_id]
-            executor.shutdown(wait=True)
+            executor.shutdown(wait=False)  # Ensure quick shutdown
 
         return '', 200
     
