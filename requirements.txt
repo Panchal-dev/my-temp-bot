@@ -1,5 +1,6 @@
 requests
 beautifulsoup4
-flask==2.3.3
+flask
 pytelegrambotapi
-werkzeug==2.3.8
+tqdm
+colorama
