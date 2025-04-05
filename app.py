@@ -413,10 +413,13 @@ def telegram_webhook():
                     logger.error(f"Failed to process search link {search_link}: {str(e)}")
                     continue
             
+            # Remove duplicate post links
+            all_post_links = list(dict.fromkeys(all_post_links))
+            
             if not all_post_links:
                 raise ScraperError("No posts found matching criteria")
             
-            logger.info(f"Total posts to process: {len(all_post_links)}")
+            logger.info(f"Total unique posts to process: {len(all_post_links)}")
             
             # Process posts in parallel
             with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
