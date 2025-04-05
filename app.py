@@ -87,7 +87,6 @@ def generate_links(start_year, end_year, username, title_only=False):
         for start_month, end_month in months:
             start_date = datetime.strptime(f"{year}-{start_month}", "%Y-%m-%d")
             end_date = datetime.strptime(f"{year}-{end_month}", "%Y-%m-%d")
-            # For current year, adjust end_date to current date if it exceeds
             if year == current_year and end_date > current_date:
                 end_date = current_date
                 end_month = current_date.strftime("%m-%d")
@@ -173,14 +172,12 @@ def process_post(post_link, username, start_year, end_year, media_by_year):
             except ValueError:
                 pass
         
-        # Fallback 1: Try text content of time element
         if not year and date_elem:
             date_text = date_elem.get_text(strip=True)
             match = re.search(r'(\d{4})', date_text)
             if match:
                 year = int(match.group(1))
         
-        # Fallback 2: Default to start_year if no date found
         if not year:
             year = start_year
             logger.warning(f"Date not found for {post_link}, defaulting to {year}")
@@ -209,6 +206,7 @@ def process_post(post_link, username, start_year, end_year, media_by_year):
         ]
         
         for article in filtered_articles:
+            # Process images and GIFs
             for img in article.find_all('img', src=True):
                 src = img['src']
                 full_src = urljoin(BASE_URL, src) if src.startswith("/") else src
@@ -221,12 +219,21 @@ def process_post(post_link, username, start_year, end_year, media_by_year):
                 else:
                     media_by_year[year]['images'].add(full_src)
             
-            for media in [*article.find_all('video', src=True), 
-                         *article.find_all('source', src=True)]:
+            # Process videos more broadly
+            for media in article.find_all(['video', 'source'], src=True):
                 src = media['src']
                 full_src = urljoin(BASE_URL, src) if src.startswith("/") else src
+                logger.info(f"Found video/source: {full_src}")
                 media_by_year[year]['videos'].add(full_src)
-        
+            
+            # Check for video links in <a> tags (e.g., .mp4, .webm)
+            for link in article.find_all('a', href=True):
+                href = link['href']
+                full_href = urljoin(BASE_URL, href) if href.startswith("/") else href
+                if any(full_href.lower().endswith(ext) for ext in ['.mp4', '.webm', '.mov']):
+                    logger.info(f"Found video link: {full_href}")
+                    media_by_year[year]['videos'].add(full_href)
+
     except Exception as e:
         logger.error(f"Failed to process post {post_link}: {str(e)}")
 
@@ -256,7 +263,7 @@ def create_html(file_type, media_by_year, username, start_year, end_year):
                 elif file_type == "videos":
                     html_content += f'<p><video controls style="max-width:100%;"><source src="{item}" type="video/mp4"></video></p>'
                 elif file_type == "gifs":
-                    html_content += f'<p><a href="{item}" target="_blank">View GIF</a></p>'
+                    html_content += f'<div><img src="{item}" alt="GIF" style="max-width:80%;height:auto;"></div>'
     
     html_content += "</body></html>"
     return html_content if total_items > 0 else None

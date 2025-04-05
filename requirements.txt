@@ -7,6 +7,6 @@
 #urllib3==1.26.16
 beautifulsoup4==4.12.3
 requests==2.31.0
-flask==3.0.3
+Flask==2.3.2
 pyTelegramBotAPI==4.16.1
 gunicorn==22.0.0
