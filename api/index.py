@@ -9,7 +9,7 @@ app = Flask(__name__)
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-TOKEN = "8049812102:AAEJPIZfH-lUqUXflj8BcOKuQWFZI5629Bc"
+TOKEN = "7911881145:AAHCjem9Kg_OgETaTVFDxcb8_ZFpaXPsbhI"
 AUTHORIZED_CHAT_ID = "1285451259"  # Your chat ID
 
 bot = telegram.Bot(token=TOKEN)
