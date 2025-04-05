@@ -3,19 +3,19 @@ import requests
 from bs4 import BeautifulSoup
 import re
 from urllib.parse import urljoin
-from flask import Flask, request
+from flask import Flask, request, jsonify
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from io import BytesIO
-import telegram
+import telebot  # Using pytelegrambotapi (sync)
 from datetime import datetime, timedelta
 
 app = Flask(__name__)
 
 # Telegram Bot Token from environment variable
 TELEGRAM_BOT_TOKEN = os.environ.get('TELEGRAM_BOT_TOKEN')
-bot = telegram.Bot(token=TELEGRAM_BOT_TOKEN)
+bot = telebot.TeleBot(TELEGRAM_BOT_TOKEN)
 
-# Proxy
+# Proxy Configuration (update if needed)
 PROXY = {
     "http": "http://ybmonqoz:tpcfq425wvfw@38.153.152.244:9594",
     "https": "http://ybmonqoz:tpcfq425wvfw@38.153.152.244:9594"
@@ -112,7 +112,7 @@ def create_html(file_type, items):
     return html_content
 
 @app.route('/telegram', methods=['POST'])
-async def telegram_webhook():
+def telegram_webhook():  # Removed async
     update = request.get_json()
     if not update or 'message' not in update or 'text' not in update['message']:
         return '', 200
@@ -121,10 +121,10 @@ async def telegram_webhook():
     message_id = update['message']['message_id']
     text = update['message']['text'].strip()
 
-    # Parse input (e.g., "username title_only start_year end_year" or "/start username title_only start_year end_year")
+    # Parse input
     parts = text.split()
     if len(parts) < 1 or (parts[0] == '/start' and len(parts) < 2):
-        await bot.send_message(chat_id=chat_id, text="Usage: username [title_only y/n] [start_year] [end_year]\nExample: john y 2020 2022", reply_to_message_id=message_id)
+        bot.send_message(chat_id=chat_id, text="Usage: username [title_only y/n] [start_year] [end_year]\nExample: john y 2020 2022", reply_to_message_id=message_id)
         return '', 200
 
     username = parts[1] if parts[0] == '/start' else parts[0]
@@ -133,7 +133,7 @@ async def telegram_webhook():
     end_year = int(parts[4]) if len(parts) > 4 else 2025
 
     # Send processing message
-    progress_msg = await bot.send_message(chat_id=chat_id, text=f"📸 Scraping for {username} ({start_year}-{end_year})...")
+    progress_msg = bot.send_message(chat_id=chat_id, text=f"📸 Scraping for {username} ({start_year}-{end_year})...")
 
     # Scrape and process
     unique_images, unique_videos, unique_gifs = set(), set(), set()
@@ -141,7 +141,7 @@ async def telegram_webhook():
     all_post_links = []
     for _, search_link in all_links:
         total_pages = fetch_total_pages(search_link)
-        for page in range(1, min(total_pages + 1, 3)):  # Limit to 2 pages per range to fit 10s
+        for page in range(1, min(total_pages + 1, 3)):  # Limit to 2 pages per range
             all_post_links.extend(scrape_post_links(f"{search_link}&page={page}"))
 
     with ThreadPoolExecutor(max_workers=5) as executor:
@@ -158,11 +158,11 @@ async def telegram_webhook():
             html_content = create_html(file_type, items)
             html_file = BytesIO(html_content.encode('utf-8'))
             html_file.name = f"{file_type}.html"
-            await bot.send_document(chat_id=chat_id, document=html_file, filename=f"{file_type}.html", caption=f"{file_type.capitalize()} for {username}")
+            bot.send_document(chat_id=chat_id, document=html_file, filename=f"{file_type}.html", caption=f"{file_type.capitalize()} for {username}")
 
     # Clean up
-    await bot.delete_message(chat_id=chat_id, message_id=progress_msg.message_id)
+    bot.delete_message(chat_id=chat_id, message_id=progress_msg.message_id)
     return '', 200
 
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)))
+    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 8080)))
