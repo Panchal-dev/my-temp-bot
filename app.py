@@ -25,7 +25,7 @@ app = Flask(__name__)
 MAX_RETRIES = 3
 REQUEST_TIMEOUT = 10
 MAX_WORKERS = 5
-MAX_PAGES_PER_SEARCH = 2
+MAX_PAGES_PER_SEARCH = 10  # Aligned with original script's split logic
 
 try:
     TELEGRAM_BOT_TOKEN = os.environ['TELEGRAM_BOT_TOKEN']
@@ -97,6 +97,29 @@ def generate_links(start_year, end_year, username, title_only=False):
             links.append((year, url))
     return links
 
+def split_url(url, start_date, end_date, max_pages=MAX_PAGES_PER_SEARCH):
+    try:
+        start_dt = datetime.strptime(start_date, "%Y-%m-%d")
+        end_dt = datetime.strptime(end_date, "%Y-%m-%d")
+        total_pages = fetch_total_pages(url)
+        if total_pages <= max_pages:
+            return [url]
+        
+        total_days = (end_dt - start_dt).days
+        mid_dt = start_dt + timedelta(days=total_days // 2)
+        first_range = (start_date, mid_dt.strftime("%Y-%m-%d"))
+        second_range = ((mid_dt + timedelta(days=1)).strftime("%Y-%m-%d"), end_date)
+        
+        first_url = re.sub(r"c\[newer_than\]=[^&]+", f"c[newer_than]={first_range[0]}", url)
+        first_url = re.sub(r"c\[older_than\]=[^&]+", f"c[older_than]={first_range[1]}", first_url)
+        second_url = re.sub(r"c\[newer_than\]=[^&]+", f"c[newer_than]={second_range[0]}", url)
+        second_url = re.sub(r"c\[older_than\]=[^&]+", f"c[older_than]={second_range[1]}", second_url)
+        
+        return split_url(first_url, first_range[0], first_range[1]) + split_url(second_url, second_range[0], second_range[1])
+    except Exception as e:
+        logger.error(f"Split error for {url}: {str(e)}")
+        return [url]
+
 def fetch_total_pages(url):
     try:
         response = make_request(url)
@@ -159,7 +182,7 @@ def process_post(post_link, username, unique_images, unique_videos, unique_gifs)
                 full_src = urljoin(BASE_URL, src) if src.startswith("/") else src
                 if (src.startswith("data:image") or 
                     "addonflare/awardsystem/icons/" in src or
-                    any(kw in src.lower() for kw in ["avatars", "badge", "premium", "likes"])):
+                    any(kw in src.lower() for kw in ["avatars", "ozzmodz_badges_badge", "premium", "likes"])):
                     continue
                 if src.endswith(".gif") and full_src not in unique_gifs:
                     unique_gifs.add(full_src)
@@ -186,25 +209,24 @@ def create_html(file_type, items, username, start_year, end_year):
         return None
         
     html_content = f"""<!DOCTYPE html><html><head>
-    <title>{username} - {file_type.capitalize()}</title>
+    <title>{username} - {file_type.capitalize()} Links</title>
     <meta charset="UTF-8">
     <style>
         body {{ font-family: Arial, sans-serif; margin: 20px; }}
-        .item {{ margin: 20px 0; padding: 10px; border: 1px solid #eee; }}
-        img, video {{ max-width: 80%; height: auto; display: block; }}
-        a {{ color: #0066cc; text-decoration: none; }}
+        img {{ max-width: 80%; height: auto; }}
+        video {{ max-width: 100%; }}
     </style>
     </head>
     <body>
-    <h1>{username} - {file_type.capitalize()} ({len(items)})</h1>"""
+    <h1>{username} - {file_type.capitalize()} Links ({start_year}-{end_year})</h1>"""
     
     for item in items:
         if file_type == "images":
-            html_content += f'<div class="item"><img src="{item}" alt="Image"><a href="{item}" target="_blank">View Original</a></div>'
+            html_content += f'<div><img src="{item}" alt="Image" style="max-width:80%;height:auto;"></div>'
         elif file_type == "videos":
-            html_content += f'<div class="item"><video controls><source src="{item}" type="video/mp4"></video><a href="{item}" target="_blank">Download Video</a></div>'
+            html_content += f'<p><video controls style="max-width:100%;"><source src="{item}" type="video/mp4"></video></p>'
         elif file_type == "gifs":
-            html_content += f'<div class="item"><img src="{item}" alt="GIF"><a href="{item}" target="_blank">View Original GIF</a></div>'
+            html_content += f'<p><a href="{item}" target="_blank">View GIF</a></p>'
     
     html_content += "</body></html>"
     return html_content
@@ -240,7 +262,7 @@ def cancel_task(chat_id):
         executor, futures = active_tasks[chat_id]
         for future in futures:
             future.cancel()
-        executor.shutdown(wait=False)  # Immediate shutdown
+        executor.shutdown(wait=False)
         del active_tasks[chat_id]
         return True
     return False
@@ -296,7 +318,7 @@ def telegram_webhook():
             )
             return '', 200
 
-        # Parse username correctly (allow spaces)
+        # Parse username and parameters
         if parts[0] == '/start':
             username = ' '.join(parts[1:-3]) if len(parts) > 4 else parts[1]
             title_only_idx = 2 if len(parts) <= 4 else len(parts) - 3
@@ -326,13 +348,20 @@ def telegram_webhook():
             return '', 200
 
         for year, search_link in search_links:
+            if chat_id not in active_tasks:
+                raise ScraperError("Task cancelled by user")
             total_pages = fetch_total_pages(search_link)
-            pages_to_scrape = min(total_pages, MAX_PAGES_PER_SEARCH)
-            for page in range(1, pages_to_scrape + 1):
-                if chat_id not in active_tasks:  # Check if stopped
+            urls_to_process = split_url(search_link, *re.search(r"c\[newer_than\]=(\d{4}-\d{2}-\d{2})&c\[older_than\]=(\d{4}-\d{2}-\d{2})", search_link).groups()) if total_pages > MAX_PAGES_PER_SEARCH else [search_link]
+            
+            for url in urls_to_process:
+                if chat_id not in active_tasks:
                     raise ScraperError("Task cancelled by user")
-                post_links = scrape_post_links(f"{search_link}&page={page}")
-                all_post_links.update(post_links)
+                pages = fetch_total_pages(url)
+                for page in range(1, pages + 1):
+                    if chat_id not in active_tasks:
+                        raise ScraperError("Task cancelled by user")
+                    post_links = scrape_post_links(f"{url}&page={page}")
+                    all_post_links.update(post_links)
 
         if not all_post_links:
             bot.edit_message_text(
@@ -354,11 +383,11 @@ def telegram_webhook():
             processed_count = 0
             total_posts = len(all_post_links)
             for future in as_completed(futures):
-                if chat_id not in active_tasks:  # Immediate stop check
+                if chat_id not in active_tasks:
                     raise ScraperError("Task cancelled by user")
                 future.result()
                 processed_count += 1
-                if processed_count % 10 == 0:
+                if processed_count % 10 == 0 or processed_count == total_posts:
                     bot.edit_message_text(
                         chat_id=chat_id,
                         message_id=progress_msg.message_id,
@@ -385,7 +414,7 @@ def telegram_webhook():
                             chat_id=chat_id,
                             file_buffer=html_file,
                             filename=html_file.name,
-                            caption=f"Found {len(items)} {file_type} for '{username}' ({start_year}-{end_year})"
+                            更新=caption=f"Found {len(items)} {file_type} for '{username}' ({start_year}-{end_year})"
                         )
                         any_sent = True
 
@@ -413,7 +442,7 @@ def telegram_webhook():
         finally:
             if chat_id in active_tasks:
                 del active_tasks[chat_id]
-            executor.shutdown(wait=False)  # Ensure quick shutdown
+            executor.shutdown(wait=False)
 
         return '', 200
     
