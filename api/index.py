@@ -175,7 +175,13 @@ def webhook():
         
         chat_id = update.message.chat_id
         text = update.message.text
-        logger.info(f"Received message: {text} from chat_id: {chat_id}")
+        
+        # Only process if chat_id matches authorized ID
+        if str(chat_id) != "1285451259":
+            logger.warning(f"Unauthorized access attempt from chat_id: {chat_id}")
+            return jsonify({"status": "unauthorized"}), 403
+        
+        logger.info(f"Received message: {text} from authorized chat_id: {chat_id}")
         
         if text.startswith('/start'):
             bot.send_message(chat_id=chat_id, text="Welcome! Send me a username to process.")
@@ -183,7 +189,7 @@ def webhook():
             bot.send_message(chat_id=chat_id, text=f"Processing username: {text}...")
             file_path = process_username(text)
             send_file(chat_id, file_path)
-            bot.send_message(chat_id=chat_id, text="Processing complete! Here’s your images.html file.")
+            bot.send_message(chat_id=chat_id, text="Processing complete! Here's your images.html file.")
         
         return jsonify({"status": "success"}), 200
     except Exception as e:
