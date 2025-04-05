@@ -6,6 +6,6 @@ tqdm==4.66.1
 colorama==0.4.6
 urllib3==1.26.16
 ###################
-gunicorn==20.1.0  # Production server
-python-dotenv==1.0.0  # Environment variables
-psutil==5.9.5  # System monitoring (used in health check)
+# gunicorn==20.1.0  # Production server
+# python-dotenv==1.0.0  # Environment variables
+# psutil==5.9.5  # System monitoring (used in health check)
