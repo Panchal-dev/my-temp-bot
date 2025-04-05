@@ -2,19 +2,15 @@
   "version": 2,
   "builds": [
     {
-      "src": "api/index.py",
+      "src": "app.py",
       "use": "@vercel/python"
     }
   ],
   "routes": [
     {
-      "src": "/webhook",
-      "dest": "api/index.py",
-      "methods": ["POST"]
-    },
-    {
-      "src": "/.*",
-      "dest": "api/index.py"
+      "src": "/telegram",
+      "methods": ["POST"],
+      "dest": "app.py"
     }
   ]
 }
