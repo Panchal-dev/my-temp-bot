@@ -151,7 +151,7 @@ def scrape_post_links(search_url):
         logger.error(f"Failed to scrape post links: {str(e)}")
         return []
 
-def process_post(post_link, username, start_year, end_year, media_by_year):
+def process_post(post_link, username, start_year, end_year, media_by_year, global_seen):
     try:
         response = make_request(post_link)
         soup = BeautifulSoup(response.text, 'html.parser')
@@ -238,11 +238,14 @@ def process_post(post_link, username, start_year, end_year, media_by_year):
                     logger.info(f"Found video link: {full_href}")
                     media_order.append(('videos', full_href))
             
-            seen = {'images': set(), 'videos': set(), 'gifs': set()}
+            # Append media in order, using global seen set for deduplication
             for media_type, url in media_order:
-                if url not in seen[media_type]:
-                    seen[media_type].add(url)
+                if url not in global_seen[media_type]:
+                    global_seen[media_type].add(url)
                     media_by_year[year][media_type].append(url)
+
+    except Exception as e:
+        logger.error(f"Failed to process post {post_link}: {str(e)}")
 
     except Exception as e:
         logger.error(f"Failed to process post {post_link}: {str(e)}")
@@ -397,6 +400,7 @@ def telegram_webhook():
                            for year in range(start_year, end_year + 1)}
             all_post_links = []
             seen_links = set()
+            global_seen = {'images': set(), 'videos': set(), 'gifs': set()}  # Global deduplication
             
             search_links = generate_links(start_year, end_year, username, title_only)
             if not search_links:
@@ -431,7 +435,7 @@ def telegram_webhook():
                 return '', 200
 
             futures = [
-                executor.submit(process_post, link, username, start_year, end_year, media_by_year)
+                executor.submit(process_post, link, username, start_year, end_year, media_by_year, global_seen)
                 for link in all_post_links
             ]
             active_tasks[chat_id] = (executor, futures)
