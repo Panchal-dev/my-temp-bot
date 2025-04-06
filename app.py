@@ -24,7 +24,7 @@ app = Flask(__name__)
 # Configuration
 MAX_RETRIES = 3
 REQUEST_TIMEOUT = 20
-MAX_WORKERS = 5
+MAX_WORKERS = 5  # Keep at 5 since Railway has 1 vCPU
 MAX_PAGES_PER_SEARCH = 9
 
 try:
@@ -40,15 +40,17 @@ except Exception as e:
 # List of proxies to try sequentially
 PROXIES = [
     {
-        "http": "http://72.10.160.90:27623",
-        "https": "http://72.10.160.90:27623"
+        "http": "http://45.140.143.77:18080",
+        "https": "http://45.140.143.77:18080"
     },
-    # Proxy 2
+    {
+    "http": "http://34.143.143.61:7777",
+    "https": "http://34.143.143.61:7777"
+    },
     {
         "http": "http://172.188.122.92:80",
         "https": "http://172.188.122.92:80"
     },
-    # Proxy 3
     {
         "http": "http://49.51.232.22:13001",
         "https": "http://49.51.232.22:13001"
@@ -66,7 +68,7 @@ active_tasks = {}
 # Allowed chat IDs
 ALLOWED_CHAT_IDS = {5809601894, 1285451259}
 
-def make_request(url, method='get', **kwargs vuelta):
+def make_request(url, method='get', **kwargs):
     # Try each proxy in the PROXIES list
     for proxy_idx, proxy in enumerate(PROXIES):
         for attempt in range(MAX_RETRIES):
