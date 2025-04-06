@@ -145,13 +145,15 @@ def scrape_post_links(search_url):
         response = make_request(search_url)
         soup = BeautifulSoup(response.text, 'html.parser')
         links = []
+        seen = set()  # To remove duplicates while preserving order
         for link in soup.find_all('a', href=True):
             href = link['href']
             if ('threads/' in href and 
                 not href.startswith('#') and 
                 'page-' not in href):
                 full_url = urljoin(BASE_URL, href)
-                if full_url not in links:  # Preserve order, remove duplicates
+                if full_url not in seen:
+                    seen.add(full_url)
                     links.append(full_url)
         return links
     except Exception as e:
@@ -207,7 +209,10 @@ def process_post(post_link, username, start_year, end_year, media_by_year):
         ]
         
         for article in filtered_articles:
-            # Process images and GIFs
+            # Process media in order of appearance
+            media_order = []
+            
+            # Images and GIFs
             for img in article.find_all('img', src=True):
                 src = img['src']
                 full_src = urljoin(BASE_URL, src) if src.startswith("/") else src
@@ -216,46 +221,45 @@ def process_post(post_link, username, start_year, end_year, media_by_year):
                     any(kw in src.lower() for kw in ["avatars", "ozzmodz_badges_badge", "premium", "likes"])):
                     continue
                 if src.endswith(".gif"):
-                    if full_src not in media_by_year[year]['gifs']:
-                        media_by_year[year]['gifs'].append(full_src)
+                    media_order.append(('gifs', full_src))
                 else:
-                    if full_src not in media_by_year[year]['images']:
-                        media_by_year[year]['images'].append(full_src)
+                    media_order.append(('images', full_src))
             
-            # Process videos (ensure all <video> and <source> are caught)
+            # Videos (enhanced to catch all cases)
             for video in article.find_all('video'):
-                # Check video tag itself
                 if video.get('src'):
                     full_src = urljoin(BASE_URL, video['src']) if video['src'].startswith("/") else video['src']
                     logger.info(f"Found video tag src: {full_src}")
-                    if full_src not in media_by_year[year]['videos']:
-                        media_by_year[year]['videos'].append(full_src)
-                # Check nested source tags
+                    media_order.append(('videos', full_src))
                 for source in video.find_all('source', src=True):
                     full_src = urljoin(BASE_URL, source['src']) if source['src'].startswith("/") else source['src']
                     logger.info(f"Found video source: {full_src}")
-                    if full_src not in media_by_year[year]['videos']:
-                        media_by_year[year]['videos'].append(full_src)
+                    media_order.append(('videos', full_src))
             
-            # Check standalone source tags (unlikely but for completeness)
+            # Standalone source tags
             for source in article.find_all('source', src=True):
                 full_src = urljoin(BASE_URL, source['src']) if source['src'].startswith("/") else source['src']
                 logger.info(f"Found standalone source: {full_src}")
-                if full_src not in media_by_year[year]['videos']:
-                    media_by_year[year]['videos'].append(full_src)
+                media_order.append(('videos', full_src))
             
-            # Check for video links in <a> tags
+            # Video links in <a> tags
             for link in article.find_all('a', href=True):
                 href = link['href']
                 full_href = urljoin(BASE_URL, href) if href.startswith("/") else href
                 if any(full_href.lower().endswith(ext) for ext in ['.mp4', '.webm', '.mov']):
                     logger.info(f"Found video link: {full_href}")
-                    if full_href not in media_by_year[year]['videos']:
-                        media_by_year[year]['videos'].append(full_href)
+                    media_order.append(('videos', full_href))
+            
+            # Append media in order, avoiding duplicates
+            seen = {'images': set(), 'videos': set(), 'gifs': set()}
+            for media_type, url in media_order:
+                if url not in seen[media_type]:
+                    seen[media_type].add(url)
+                    media_by_year[year][media_type].append(url)
 
     except Exception as e:
         logger.error(f"Failed to process post {post_link}: {str(e)}")
-
+        
 def create_html(file_type, media_by_year, username, start_year, end_year):
     html_content = f"""<!DOCTYPE html><html><head>
     <title>{username} - {file_type.capitalize()} Links</title>
@@ -276,7 +280,7 @@ def create_html(file_type, media_by_year, username, start_year, end_year):
         if items:
             html_content += f"<h2>{year}</h2>"
             total_items += len(items)
-            for item in items:  # Items are already in site order
+            for item in items:  # Items are in site order from process_post
                 if file_type == "images":
                     html_content += f'<div><img src="{item}" alt="Image" style="max-width:80%;height:auto;"></div>'
                 elif file_type == "videos":
