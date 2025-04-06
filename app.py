@@ -24,7 +24,7 @@ app = Flask(__name__)
 # Configuration
 MAX_RETRIES = 3
 REQUEST_TIMEOUT = 20
-MAX_WORKERS = 5  # Keep at 5 since Railway has 1 vCPU
+MAX_WORKERS = 5  # Works with Railway’s 1 vCPU
 MAX_PAGES_PER_SEARCH = 9
 
 try:
@@ -545,4 +545,4 @@ def health_check():
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 8080))
-    app.run(host="0.0.0.0", port=port)
+    app.run(host="0.0.0.0", port=port, debug=False)  # debug=False for production
