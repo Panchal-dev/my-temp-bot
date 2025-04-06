@@ -82,25 +82,16 @@ def generate_links(start_year, end_year, username, title_only=False):
     
     links = []
     for year in range(start_year, end_year + 1):
-        months = [("01-01", "03-31"), ("04-01", "06-30"), 
-                 ("07-01", "09-30"), ("10-01", "12-31")]
-        for start_month, end_month in months:
-            start_date = datetime.strptime(f"{year}-{start_month}", "%Y-%m-%d")
-            end_date = datetime.strptime(f"{year}-{end_month}", "%Y-%m-%d")
-            if year == current_year and end_date > current_date:
-                end_date = current_date
-                end_month = current_date.strftime("%m-%d")
-            if start_date > current_date:
-                continue
-                
-            url = (
-                f"{BASE_URL}/search/39143295/?q={username.replace(' ', '+')}"
-                f"&c[newer_than]={year}-{start_month}"
-                f"&c[older_than]={year}-{end_month}"
-                f"&c[title_only]={1 if title_only else 0}"
-                "&o=date"
-            )
-            links.append((year, url))
+        start_date = f"{year}-01-01"
+        end_date = f"{year}-12-31" if year < current_year else current_date.strftime("%Y-%m-%d")
+        url = (
+            f"{BASE_URL}/search/39143295/?q={username.replace(' ', '+')}"
+            f"&c[newer_than]={start_date}"
+            f"&c[older_than]={end_date}"
+            f"&c[title_only]={1 if title_only else 0}"
+            "&o=date"
+        )
+        links.append((year, url))
     return links
 
 def split_url(url, start_date, end_date, max_pages=MAX_PAGES_PER_SEARCH):
@@ -145,7 +136,7 @@ def scrape_post_links(search_url):
         response = make_request(search_url)
         soup = BeautifulSoup(response.text, 'html.parser')
         links = []
-        seen = set()  # To remove duplicates while preserving order
+        seen = set()
         for link in soup.find_all('a', href=True):
             href = link['href']
             if ('threads/' in href and 
@@ -172,14 +163,16 @@ def process_post(post_link, username, start_year, end_year, media_by_year):
             try:
                 post_date = datetime.strptime(date_elem['datetime'], "%Y-%m-%dT%H:%M:%S%z")
                 year = post_date.year
+                logger.info(f"Parsed datetime {post_date} for {post_link}, year: {year}")
             except ValueError:
-                pass
+                logger.warning(f"Invalid datetime format for {post_link}: {date_elem['datetime']}")
         
         if not year and date_elem:
             date_text = date_elem.get_text(strip=True)
             match = re.search(r'(\d{4})', date_text)
             if match:
                 year = int(match.group(1))
+                logger.info(f"Parsed year {year} from text for {post_link}")
         
         if not year:
             year = start_year
@@ -209,10 +202,8 @@ def process_post(post_link, username, start_year, end_year, media_by_year):
         ]
         
         for article in filtered_articles:
-            # Process media in order of appearance
             media_order = []
             
-            # Images and GIFs
             for img in article.find_all('img', src=True):
                 src = img['src']
                 full_src = urljoin(BASE_URL, src) if src.startswith("/") else src
@@ -225,7 +216,6 @@ def process_post(post_link, username, start_year, end_year, media_by_year):
                 else:
                     media_order.append(('images', full_src))
             
-            # Videos (enhanced to catch all cases)
             for video in article.find_all('video'):
                 if video.get('src'):
                     full_src = urljoin(BASE_URL, video['src']) if video['src'].startswith("/") else video['src']
@@ -236,13 +226,11 @@ def process_post(post_link, username, start_year, end_year, media_by_year):
                     logger.info(f"Found video source: {full_src}")
                     media_order.append(('videos', full_src))
             
-            # Standalone source tags
             for source in article.find_all('source', src=True):
                 full_src = urljoin(BASE_URL, source['src']) if source['src'].startswith("/") else source['src']
                 logger.info(f"Found standalone source: {full_src}")
                 media_order.append(('videos', full_src))
             
-            # Video links in <a> tags
             for link in article.find_all('a', href=True):
                 href = link['href']
                 full_href = urljoin(BASE_URL, href) if href.startswith("/") else href
@@ -250,7 +238,6 @@ def process_post(post_link, username, start_year, end_year, media_by_year):
                     logger.info(f"Found video link: {full_href}")
                     media_order.append(('videos', full_href))
             
-            # Append media in order, avoiding duplicates
             seen = {'images': set(), 'videos': set(), 'gifs': set()}
             for media_type, url in media_order:
                 if url not in seen[media_type]:
@@ -280,7 +267,7 @@ def create_html(file_type, media_by_year, username, start_year, end_year):
         if items:
             html_content += f"<h2>{year}</h2>"
             total_items += len(items)
-            for item in items:  # Items are in site order from process_post
+            for item in items:
                 if file_type == "images":
                     html_content += f'<div><img src="{item}" alt="Image" style="max-width:80%;height:auto;"></div>'
                 elif file_type == "videos":
@@ -386,7 +373,6 @@ def telegram_webhook():
             )
             return '', 200
 
-        # Parse username and parameters
         if parts[0] == '/start':
             username = ' '.join(parts[1:-3]) if len(parts) > 4 else parts[1]
             title_only_idx = 2 if len(parts) <= 4 else len(parts) - 3
@@ -407,11 +393,10 @@ def telegram_webhook():
         active_tasks[chat_id] = (executor, [])
 
         try:
-            # Store media by year using lists to preserve order
             media_by_year = {year: {'images': [], 'videos': [], 'gifs': []} 
                            for year in range(start_year, end_year + 1)}
-            all_post_links = []  # Use list to preserve order
-            seen_links = set()  # Track duplicates
+            all_post_links = []
+            seen_links = set()
             
             search_links = generate_links(start_year, end_year, username, title_only)
             if not search_links:
@@ -422,7 +407,6 @@ def telegram_webhook():
                 )
                 return '', 200
 
-            # Collect all unique post links in order
             for year, search_link in search_links:
                 total_pages = fetch_total_pages(search_link)
                 urls_to_process = split_url(search_link, *re.search(r"c\[newer_than\]=(\d{4}-\d{2}-\d{2})&c\[older_than\]=(\d{4}-\d{2}-\d{2})", search_link).groups()) if total_pages > MAX_PAGES_PER_SEARCH else [search_link]
@@ -446,10 +430,9 @@ def telegram_webhook():
                 )
                 return '', 200
 
-            # Process each link once in order
             futures = [
                 executor.submit(process_post, link, username, start_year, end_year, media_by_year)
-                for link in all_post_links  # Ordered list
+                for link in all_post_links
             ]
             active_tasks[chat_id] = (executor, futures)
 
@@ -483,7 +466,7 @@ def telegram_webhook():
                         filename=html_file.name,
                         caption=f"Found {total_items} {file_type} for '{username}' ({start_year}-{end_year})"
                     )
-                    any_SENT = True
+                    any_sent = True
 
             if not any_sent:
                 send_telegram_message(
