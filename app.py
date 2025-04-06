@@ -259,7 +259,7 @@ def process_post(post_link, username, start_year, end_year, media_by_year):
 
     except Exception as e:
         logger.error(f"Failed to process post {post_link}: {str(e)}")
-        
+
 def create_html(file_type, media_by_year, username, start_year, end_year):
     html_content = f"""<!DOCTYPE html><html><head>
     <title>{username} - {file_type.capitalize()} Links</title>
@@ -410,7 +410,8 @@ def telegram_webhook():
             # Store media by year using lists to preserve order
             media_by_year = {year: {'images': [], 'videos': [], 'gifs': []} 
                            for year in range(start_year, end_year + 1)}
-            all_post_links = set()
+            all_post_links = []  # Use list to preserve order
+            seen_links = set()  # Track duplicates
             
             search_links = generate_links(start_year, end_year, username, title_only)
             if not search_links:
@@ -421,7 +422,7 @@ def telegram_webhook():
                 )
                 return '', 200
 
-            # Collect all unique post links
+            # Collect all unique post links in order
             for year, search_link in search_links:
                 total_pages = fetch_total_pages(search_link)
                 urls_to_process = split_url(search_link, *re.search(r"c\[newer_than\]=(\d{4}-\d{2}-\d{2})&c\[older_than\]=(\d{4}-\d{2}-\d{2})", search_link).groups()) if total_pages > MAX_PAGES_PER_SEARCH else [search_link]
@@ -432,7 +433,10 @@ def telegram_webhook():
                         if chat_id not in active_tasks:
                             raise ScraperError("Task cancelled by user")
                         post_links = scrape_post_links(f"{url}&page={page}")
-                        all_post_links.update(post_links)
+                        for link in post_links:
+                            if link not in seen_links:
+                                seen_links.add(link)
+                                all_post_links.append(link)
 
             if not all_post_links:
                 bot.edit_message_text(
@@ -445,7 +449,7 @@ def telegram_webhook():
             # Process each link once in order
             futures = [
                 executor.submit(process_post, link, username, start_year, end_year, media_by_year)
-                for link in all_post_links
+                for link in all_post_links  # Ordered list
             ]
             active_tasks[chat_id] = (executor, futures)
 
@@ -479,7 +483,7 @@ def telegram_webhook():
                         filename=html_file.name,
                         caption=f"Found {total_items} {file_type} for '{username}' ({start_year}-{end_year})"
                     )
-                    any_sent = True
+                    any_SENT = True
 
             if not any_sent:
                 send_telegram_message(
