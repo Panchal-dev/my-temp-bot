@@ -23,7 +23,7 @@ app = Flask(__name__)
 
 # Configuration
 MAX_RETRIES = 3
-REQUEST_TIMEOUT = 10
+REQUEST_TIMEOUT = 20
 MAX_WORKERS = 5
 MAX_PAGES_PER_SEARCH = 9
 
@@ -37,15 +37,23 @@ except Exception as e:
     logger.error(f"Failed to initialize bot: {str(e)}")
     raise
 
-#PROXY = {
-#    "http": "http://kigxipuw:4p9dfn30rig0@38.153.152.244:9594",
-#    "https": "http://kigxipuw:4p9dfn30rig0@38.153.152.244:9594"
-#}
-
-PROXY = {
-    "http": "http://172.188.122.92:80",
-    "https": "http://172.188.122.92:80"
-}
+# List of proxies to try sequentially
+PROXIES = [
+    {
+        "http": "http://72.10.160.90:27623",
+        "https": "http://72.10.160.90:27623"
+    },
+    # Proxy 2
+    {
+        "http": "http://172.188.122.92:80",
+        "https": "http://172.188.122.92:80"
+    },
+    # Proxy 3
+    {
+        "http": "http://49.51.232.22:13001",
+        "https": "http://49.51.232.22:13001"
+    }
+]
 
 BASE_URL = "https://desifakes.com"
 
@@ -58,23 +66,32 @@ active_tasks = {}
 # Allowed chat IDs
 ALLOWED_CHAT_IDS = {5809601894, 1285451259}
 
-def make_request(url, method='get', **kwargs):
-    for attempt in range(MAX_RETRIES):
-        try:
-            response = requests.request(
-                method,
-                url,
-                proxies=PROXY,
-                timeout=REQUEST_TIMEOUT,
-                **kwargs
-            )
-            response.raise_for_status()
-            return response
-        except requests.exceptions.RequestException as e:
-            logger.warning(f"Attempt {attempt + 1} failed for {url}: {str(e)}")
-            if attempt == MAX_RETRIES - 1:
-                raise ScraperError(f"Failed after {MAX_RETRIES} attempts: {str(e)}")
-            time.sleep(1 * (attempt + 1))
+def make_request(url, method='get', **kwargs vuelta):
+    # Try each proxy in the PROXIES list
+    for proxy_idx, proxy in enumerate(PROXIES):
+        for attempt in range(MAX_RETRIES):
+            try:
+                logger.info(f"Attempting request to {url} with proxy {proxy_idx + 1}: {proxy['http']}")
+                response = requests.request(
+                    method,
+                    url,
+                    proxies=proxy,
+                    timeout=REQUEST_TIMEOUT,
+                    **kwargs
+                )
+                response.raise_for_status()
+                logger.info(f"Success with proxy {proxy_idx + 1} on attempt {attempt + 1}")
+                return response
+            except requests.exceptions.RequestException as e:
+                logger.warning(f"Attempt {attempt + 1} failed for {url} with proxy {proxy_idx + 1}: {str(e)}")
+                if attempt == MAX_RETRIES - 1:
+                    logger.error(f"Proxy {proxy_idx + 1} failed after {MAX_RETRIES} attempts")
+                    if proxy_idx == len(PROXIES) - 1:  # Last proxy
+                        raise ScraperError(f"All proxies failed after {MAX_RETRIES} attempts each: {str(e)}")
+                    else:
+                        logger.info(f"Switching to next proxy {proxy_idx + 2}")
+                        break  # Move to next proxy
+                time.sleep(1 * (attempt + 1))
 
 def generate_links(start_year, end_year, username, title_only=False):
     if not username or not isinstance(username, str):
@@ -252,9 +269,6 @@ def process_post(post_link, username, start_year, end_year, media_by_year, globa
     except Exception as e:
         logger.error(f"Failed to process post {post_link}: {str(e)}")
 
-    except Exception as e:
-        logger.error(f"Failed to process post {post_link}: {str(e)}")
-
 def create_html(file_type, media_by_year, username, start_year, end_year):
     html_content = f"""<!DOCTYPE html><html><head>
     <title>{username} - {file_type.capitalize()} Links</title>
@@ -394,7 +408,7 @@ def telegram_webhook():
 
         progress_msg = send_telegram_message(
             chat_id=chat_id,
-            text=f"🔍 Searching for '{username}' ({start_year}-{end_year})..."
+            text=f"🔍 Processing '{username}' ({start_year}-{end_year})..."
         )
 
         executor = ThreadPoolExecutor(max_workers=MAX_WORKERS)
