@@ -37,9 +37,14 @@ except Exception as e:
     logger.error(f"Failed to initialize bot: {str(e)}")
     raise
 
+#PROXY = {
+#    "http": "http://kigxipuw:4p9dfn30rig0@38.153.152.244:9594",
+#    "https": "http://kigxipuw:4p9dfn30rig0@38.153.152.244:9594"
+#}
+
 PROXY = {
-    "http": "http://kigxipuw:4p9dfn30rig0@38.153.152.244:9594",
-    "https": "http://kigxipuw:4p9dfn30rig0@38.153.152.244:9594"
+    "http": "http://172.188.122.92:80",
+    "https": "http://172.188.122.92:80"
 }
 
 BASE_URL = "https://desifakes.com"
