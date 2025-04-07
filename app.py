@@ -22,9 +22,9 @@ logger = logging.getLogger(__name__)
 app = Flask(__name__)
 
 # Configuration
-MAX_RETRIES = 3  # Maximum retries as per needed
-MAX_WORKERS = 10  # Increased for parallelism on Railway’s 1 vCPU
-MAX_PAGES_PER_SEARCH = 10  # Increased to reduce splitting frequency
+MAX_RETRIES = 4  # Maximum retries as per needed
+MAX_WORKERS = 4  # Increased for parallelism on Railway’s 1 vCPU
+MAX_PAGES_PER_SEARCH = 9  # Increased to reduce splitting frequency
 
 # Telegram Bot Setup
 try:
