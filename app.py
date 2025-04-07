@@ -22,8 +22,8 @@ logger = logging.getLogger(__name__)
 app = Flask(__name__)
 
 # Configuration
-MAX_RETRIES = 4  # Maximum retries as per needed
-MAX_WORKERS = 4  # Increased for parallelism on Railway’s 1 vCPU
+MAX_RETRIES = 2  # Maximum retries as per needed
+MAX_WORKERS = 8  # Increased for parallelism on Railway’s 1 vCPU
 MAX_PAGES_PER_SEARCH = 9  # Increased to reduce splitting frequency
 
 # Telegram Bot Setup
@@ -40,9 +40,9 @@ except Exception as e:
 # Proxy configuration
 PROXY = {"http": "http://34.143.143.61:7777", "https": "http://34.143.143.61:7777"}
 FALLBACK_PROXIES = [
+    {"http": "http://43.153.79.36:13001", "https": "http://43.153.79.36:13001"},
     {"http": "http://45.140.143.77:18080", "https": "http://45.140.143.77:18080"},
-    {"http": "http://172.188.122.92:80", "https": "http://172.188.122.92:80"},
-    {"http": "http://49.51.232.22:13001", "https": "http://49.51.232.22:13001"}
+    {"http": "http://172.188.122.92:80", "https": "http://172.188.122.92:80"}
 ]
 
 BASE_URL = "https://desifakes.com"
@@ -95,7 +95,8 @@ def generate_links(start_year, end_year, username, title_only=False):
     
     links = []
     for year in range(start_year, end_year + 1):
-        months = [("01-01", "03-31"), ("04-01", "06-30"), ("07-01", "09-30"), ("10-01", "12-31")]
+        # months = [("01-01", "03-31"), ("04-01", "06-30"), ("07-01", "09-30"), ("10-01", "12-31")]
+        months = [("01-01", "02-15"), ("02-16", "03-31"), ("04-01", "05-15"), ("05-16", "06-30"), ("07-01", "08-15"), ("08-16", "09-30"), ("10-01", "11-15"), ("11-16", "12-31")]
         for start_month, end_month in months:
             start_date = f"{year}-{start_month}"
             end_date = (f"{year}-{end_month}" if year < current_year or 
