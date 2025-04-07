@@ -27,12 +27,18 @@ MAX_WORKERS = 6  # Total workers
 MAX_PAGES_PER_SEARCH = 10  # Threshold for splitting
 
 # Proxy configuration
-PROXY_GROUP_1 = {"http": "http://157.230.40.77:1004", "https": "http://157.230.40.77:1004"}  # 3 workers
+PROXY_GROUP_1 = {"http": "http://45.140.143.77:18080", "https": "http://45.140.143.77:18080"}  # 3 workers
 PROXY_GROUP_2 = {"http": "http://146.56.142.114:1080", "https": "http://146.56.142.114:1080"}  # 3 workers
 FALLBACK_PROXIES = [
-    {"http": "http://45.140.143.77:18080", "https": "http://45.140.143.77:18080"},
-    {"http": "http://172.188.122.92:80", "https": "http://172.188.122.92:80"}
+    {"http": "http://146.56.142.114:1080", "https": "http://146.56.142.114:1080"},
+    {"http": "http://66.165.230.106:8081", "https": "http://66.165.230.106:8081"},
+    {"http": "http://14.241.80.37:8080", "https": "http://14.241.80.37:8080"},
+    {"http": "http://15.235.10.31:28003", "https": "http://15.235.10.31:28003"},
+    {"http": "http://171.238.155.101:10009", "https": "http://171.238.155.101:10009"},
+    {"http": "http://15.235.53.20:28003", "https": "http://15.235.53.20:28003"},
+    {"http": "http://15.235.9.224:28003", "https": "http://15.235.9.224:28003"}
 ]
+
 
 BASE_URL = "https://desifakes.com"
 
