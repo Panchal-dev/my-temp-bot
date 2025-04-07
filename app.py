@@ -40,7 +40,7 @@ except Exception as e:
 # Proxy configuration
 PROXY =  {"http": "http://43.153.79.36:13001", "https": "http://43.153.79.36:13001"}
 FALLBACK_PROXIES = [
-    {"http": "146.56.142.114:1080", "https": "146.56.142.114:1080"},
+    {"http": "http://146.56.142.114:1080", "https": "http://146.56.142.114:1080"},
     {"http": "http://45.140.143.77:18080", "https": "http://45.140.143.77:18080"},
     {"http": "http://172.188.122.92:80", "https": "http://172.188.122.92:80"}
 ]
