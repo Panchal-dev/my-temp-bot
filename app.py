@@ -23,7 +23,7 @@ app = Flask(__name__)
 
 # Configuration
 MAX_RETRIES = 3  # Maximum retries as per needed
-MAX_WORKERS = 5  # Increased for parallelism on Railway’s 1 vCPU
+MAX_WORKERS = 10  # Increased for parallelism on Railway’s 1 vCPU
 MAX_PAGES_PER_SEARCH = 10  # Increased to reduce splitting frequency
 
 # Telegram Bot Setup
@@ -57,8 +57,8 @@ active_tasks = {}
 ALLOWED_CHAT_IDS = {5809601894, 1285451259}
 
 def make_request(url, method='get', **kwargs):
-    initial_timeout = 5  # Starting timeout
-    timeout_increment = 7  # Increase by 5 seconds each retry
+    initial_timeout = 10  # Starting timeout
+    timeout_increment = 5  # Increase by 5 seconds each retry
     proxies = [PROXY] + FALLBACK_PROXIES
 
     for proxy_idx, proxy in enumerate(proxies):
@@ -74,7 +74,7 @@ def make_request(url, method='get', **kwargs):
                 )
                 response.raise_for_status()
                 logger.info(f"Success with proxy {proxy_idx + 1} on attempt {attempt + 1} for {url}")
-                return response  # Return immediately on success
+                return response
             except requests.exceptions.RequestException as e:
                 logger.warning(f"Attempt {attempt + 1} failed for {url} with proxy {proxy_idx + 1}, timeout {current_timeout}s: {str(e)}")
                 if attempt == MAX_RETRIES - 1 and proxy_idx == len(proxies) - 1:
@@ -82,7 +82,7 @@ def make_request(url, method='get', **kwargs):
                 elif attempt == MAX_RETRIES - 1:
                     logger.info(f"Switching to next proxy {proxy_idx + 2}")
                     break
-                time.sleep(1 * (attempt + 1))  # Wait 1s, 2s, 3s before retrying
+                time.sleep(1 * (attempt + 1))
 
 def generate_links(start_year, end_year, username, title_only=False):
     if not username or not isinstance(username, str):
@@ -303,7 +303,7 @@ def telegram_webhook():
 
         parts = text.split()
         if len(parts) < 1 or (parts[0] == '/start' and len(parts) < 2):
-            send_telegram_message(chat_id=chat_id, text="Usage: username [title_only y/n] [start_year] [end_year]\nExample: 'Saiee Manjrekar' n 2023 2025", reply_to_message_id=message_id)
+            send_telegram_message(chat_id=chat_id, text="Usage: username [title_only y/n] [start_year] [end_year]\nExample: 'Akshra Singh' n 2023 2025", reply_to_message_id=message_id)
             return '', 200
 
         if chat_id in active_tasks:
@@ -338,28 +338,30 @@ def telegram_webhook():
                 return '', 200
 
             # Fetch initial page and total pages concurrently
-            page_futures = []
+            page_futures = {}
             url_page_cache = {}
             for year, search_link in search_links:
                 urls_to_process = split_url(search_link, *re.search(r"c\[newer_than\]=(\d{4}-\d{2}-\d{2})&c\[older_than\]=(\d{4}-\d{2}-\d{2})", search_link).groups())
                 for url in urls_to_process:
                     if url not in url_page_cache:
-                        page_futures.append(executor.submit(fetch_page_data, url))
+                        future = executor.submit(fetch_page_data, url)
+                        page_futures[future] = url  # Store URL with future
             
             for future in as_completed(page_futures):
                 if chat_id not in active_tasks:
                     raise ScraperError("Task cancelled by user")
+                url = page_futures[future]  # Get URL from dictionary
                 links, total_pages = future.result()
-                url = future._args[0]  # Extract URL from future
                 url_page_cache[url] = total_pages
                 all_post_links.extend(link for link in links if link not in seen_links)
                 seen_links.update(links)
 
             # Fetch remaining pages concurrently
-            additional_futures = []
+            additional_futures = {}
             for url, total_pages in url_page_cache.items():
-                for page in range(2, total_pages + 1):  # Start from page 2 since page 1 is fetched
-                    additional_futures.append(executor.submit(fetch_page_data, url, page))
+                for page in range(2, total_pages + 1):  # Start from page 2
+                    future = executor.submit(fetch_page_data, url, page)
+                    additional_futures[future] = url  # Store URL with future
             
             for future in as_completed(additional_futures):
                 if chat_id not in active_tasks:
@@ -436,7 +438,7 @@ def health_check():
 
 # Set webhook for Railway
 def set_webhook():
-    railway_url = os.environ.get('RAILWAY_PUBLIC_DOMAIN')  # Railway provides this
+    railway_url = os.environ.get('RAILWAY_PUBLIC_DOMAIN')
     if railway_url:
         webhook_url = f"https://{railway_url}/telegram"
         bot.set_webhook(url=webhook_url)
@@ -445,6 +447,6 @@ def set_webhook():
         logger.error("RAILWAY_PUBLIC_DOMAIN not set")
 
 if __name__ == "__main__":
-    set_webhook()  # Set webhook on startup
+    set_webhook()
     port = int(os.environ.get("PORT", 8080))
     app.run(host="0.0.0.0", port=port, debug=False)
