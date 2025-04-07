@@ -22,9 +22,9 @@ logger = logging.getLogger(__name__)
 app = Flask(__name__)
 
 # Configuration
-MAX_RETRIES = 3  # Maximum retries as per needed
-MAX_WORKERS = 8  # Increased for parallelism on Railway’s 1 vCPU
-MAX_PAGES_PER_SEARCH = 9  # Increased to reduce splitting frequency
+MAX_RETRIES = 3
+MAX_WORKERS = 7
+MAX_PAGES_PER_SEARCH = 10  # Threshold for splitting
 
 # Telegram Bot Setup
 try:
@@ -38,7 +38,6 @@ except Exception as e:
     raise
 
 # Proxy configuration
-# PROXY = {"http": "http://34.143.143.61:7777", "https": "http://34.143.143.61:7777"}
 PROXY = {"http": "146.56.142.114:1080", "https": "146.56.142.114:1080"}
 FALLBACK_PROXIES = [
     {"http": "http://43.153.79.36:13001", "https": "http://43.153.79.36:13001"},
@@ -58,13 +57,13 @@ active_tasks = {}
 ALLOWED_CHAT_IDS = {5809601894, 1285451259}
 
 def make_request(url, method='get', **kwargs):
-    initial_timeout = 10  # Starting timeout
-    timeout_increment = 5  # Increase by 5 seconds each retry
+    initial_timeout = 10
+    timeout_increment = 5
     proxies = [PROXY] + FALLBACK_PROXIES
 
     for proxy_idx, proxy in enumerate(proxies):
         for attempt in range(MAX_RETRIES):
-            current_timeout = initial_timeout + (attempt * timeout_increment)  # 10, 15, 20
+            current_timeout = initial_timeout + (attempt * timeout_increment)
             try:
                 response = requests.request(
                     method,
@@ -77,7 +76,7 @@ def make_request(url, method='get', **kwargs):
                 logger.info(f"Success with proxy {proxy_idx + 1} on attempt {attempt + 1} for {url}")
                 return response
             except requests.exceptions.RequestException as e:
-                logger.warning(f"Attempt {attempt + 1} failed for {url} with proxy {proxy_idx + 1}, timeout {current_timeout}s: {str(e)}")
+                logger.warning(f"Attempt {attempt + 1} failed for {url} with proxy {proxy_idx + 1}: {str(e)}")
                 if attempt == MAX_RETRIES - 1 and proxy_idx == len(proxies) - 1:
                     raise ScraperError(f"All proxies failed for {url} after {MAX_RETRIES} attempts: {str(e)}")
                 elif attempt == MAX_RETRIES - 1:
@@ -95,22 +94,17 @@ def generate_links(start_year, end_year, username, title_only=False):
     end_year = min(current_year, max(end_year, start_year))
     
     links = []
-    for year in range(start_year, end_year + 1):
-        # months = [("01-01", "03-31"), ("04-01", "06-30"), ("07-01", "09-30"), ("10-01", "12-31")]
-        months = [("01-01", "02-15"), ("02-16", "03-31"), ("04-01", "05-15"), ("05-16", "06-30"), ("07-01", "08-15"), ("08-16", "09-30"), ("10-01", "11-15"), ("11-16", "12-31")]
-        for start_month, end_month in months:
-            start_date = f"{year}-{start_month}"
-            end_date = (f"{year}-{end_month}" if year < current_year or 
-                       (year == current_year and end_month <= current_date.strftime("%m-%d")) 
-                       else current_date.strftime("%Y-%m-%d"))
-            url = (
-                f"{BASE_URL}/search/39143295/?q={username.replace(' ', '+')}"
-                f"&c[newer_than]={start_date}"
-                f"&c[older_than]={end_date}"
-                f"&c[title_only]={1 if title_only else 0}"
-                "&o=date"
-            )
-            links.append((year, url))
+    for year in range(end_year, start_year - 1, -1):  # Descending order
+        start_date = f"{year}-01-01"
+        end_date = f"{year}-12-31" if year < current_year or current_date.strftime("%Y-%m-%d") > f"{year}-12-31" else current_date.strftime("%Y-%m-%d")
+        url = (
+            f"{BASE_URL}/search/39143295/?q={username.replace(' ', '+')}"
+            f"&c[newer_than]={start_date}"
+            f"&c[older_than]={end_date}"
+            f"&c[title_only]={1 if title_only else 0}"
+            "&o=date"
+        )
+        links.append((year, url, start_date, end_date))
     logger.info(f"Generated {len(links)} search URLs for {username}")
     return links
 
@@ -122,8 +116,8 @@ def split_url(url, start_date, end_date, max_pages=MAX_PAGES_PER_SEARCH):
         soup = BeautifulSoup(response.text, 'html.parser')
         pagination = soup.find('div', class_='pageNav')
         total_pages = max([int(link.text.strip()) for link in pagination.find_all('a') if link.text.strip().isdigit()]) if pagination else 1
-        if total_pages <= max_pages:
-            return [url]
+        if total_pages < max_pages:
+            return [(url, start_date, end_date)]
         
         total_days = (end_dt - start_dt).days
         mid_dt = start_dt + timedelta(days=total_days // 2)
@@ -138,7 +132,7 @@ def split_url(url, start_date, end_date, max_pages=MAX_PAGES_PER_SEARCH):
         return split_url(first_url, first_range[0], first_range[1]) + split_url(second_url, second_range[0], second_range[1])
     except Exception as e:
         logger.error(f"Split error for {url}: {str(e)}")
-        return [url]
+        return [(url, start_date, end_date)]
 
 def fetch_page_data(url, page=None):
     try:
@@ -154,27 +148,30 @@ def fetch_page_data(url, page=None):
         logger.error(f"Failed to fetch page data for {full_url}: {str(e)}")
         return [], 1
 
-def process_post(post_link, username, start_year, end_year, media_by_year, global_seen):
+def process_post(post_link, username, start_year, end_year, media_by_date, global_seen):
     try:
         response = make_request(post_link)
         soup = BeautifulSoup(response.text, 'html.parser')
         
-        year = None
+        date = None
         date_elem = soup.find('time', class_='u-dt')
         if date_elem and 'datetime' in date_elem.attrs:
             try:
                 post_date = datetime.strptime(date_elem['datetime'], "%Y-%m-%dT%H:%M:%S%z")
+                date = post_date.strftime("%Y-%m-%d")
                 year = post_date.year
             except ValueError:
                 pass
         
-        if not year and date_elem:
-            match = re.search(r'(\d{4})', date_elem.get_text(strip=True))
+        if not date and date_elem:
+            match = re.search(r'(\d{4})-(\d{2})-(\d{2})', date_elem.get_text(strip=True))
             if match:
+                date = f"{match.group(1)}-{match.group(2)}-{match.group(3)}"
                 year = int(match.group(1))
         
-        if not year:
+        if not date:
             year = start_year
+            date = f"{year}-01-01"
         
         if year < start_year or year > end_year:
             return
@@ -193,30 +190,38 @@ def process_post(post_link, username, start_year, end_year, media_by_year, globa
                 media_type = "gifs" if src.endswith(".gif") else "images"
                 if src not in global_seen[media_type]:
                     global_seen[media_type].add(src)
-                    media_by_year[year][media_type].append(src)
+                    if date not in media_by_date[year][media_type]:
+                        media_by_date[year][media_type][date] = []
+                    media_by_date[year][media_type][date].append(src)
             
             for video in article.find_all('video', src=True):
                 src = urljoin(BASE_URL, video['src']) if video['src'].startswith("/") else video['src']
                 if src not in global_seen['videos']:
                     global_seen['videos'].add(src)
-                    media_by_year[year]['videos'].append(src)
+                    if date not in media_by_date[year]['videos']:
+                        media_by_date[year]['videos'][date] = []
+                    media_by_date[year]['videos'][date].append(src)
             
             for source in article.find_all('source', src=True):
                 src = urljoin(BASE_URL, source['src']) if source['src'].startswith("/") else source['src']
                 if src not in global_seen['videos']:
                     global_seen['videos'].add(src)
-                    media_by_year[year]['videos'].append(src)
+                    if date not in media_by_date[year]['videos']:
+                        media_by_date[year]['videos'][date] = []
+                    media_by_date[year]['videos'][date].append(src)
             
             for link in article.find_all('a', href=True):
                 href = urljoin(BASE_URL, link['href']) if link['href'].startswith("/") else link['href']
                 if any(href.lower().endswith(ext) for ext in ['.mp4', '.webm', '.mov']):
                     if href not in global_seen['videos']:
                         global_seen['videos'].add(href)
-                        media_by_year[year]['videos'].append(href)
+                        if date not in media_by_date[year]['videos']:
+                            media_by_date[year]['videos'][date] = []
+                        media_by_date[year]['videos'][date].append(href)
     except Exception as e:
         logger.error(f"Failed to process post {post_link}: {str(e)}")
 
-def create_html(file_type, media_by_year, username, start_year, end_year):
+def create_html(file_type, media_by_date, username, start_year, end_year):
     html_content = f"""<!DOCTYPE html><html><head>
     <title>{username} - {file_type.capitalize()} Links</title>
     <meta charset="UTF-8">
@@ -230,18 +235,21 @@ def create_html(file_type, media_by_year, username, start_year, end_year):
     <h1>{username} - {file_type.capitalize()} Links ({start_year}-{end_year})</h1>"""
     
     total_items = 0
-    for year in sorted(media_by_year.keys(), reverse=True):
-        items = media_by_year[year][file_type]
-        if items:
+    for year in sorted(media_by_date.keys(), reverse=True):
+        items_by_date = media_by_date[year][file_type]
+        if items_by_date:
             html_content += f"<h2>{year}</h2>"
-            total_items += len(items)
-            for item in items:
-                if file_type == "images":
-                    html_content += f'<div><img src="{item}" alt="Image" style="max-width:80%;height:auto;"></div>'
-                elif file_type == "videos":
-                    html_content += f'<p><video controls style="max-width:100%;"><source src="{item}" type="video/mp4"></video></p>'
-                elif file_type == "gifs":
-                    html_content += f'<div><img src="{item}" alt="GIF" style="max-width:80%;height:auto;"></div>'
+            for date in sorted(items_by_date.keys(), reverse=True):
+                items = items_by_date[date]
+                total_items += len(items)
+                html_content += f"<h3>{date}</h3>"
+                for item in items:
+                    if file_type == "images":
+                        html_content += f'<div><img src="{item}" alt="Image" style="max-width:80%;height:auto;"></div>'
+                    elif file_type == "videos":
+                        html_content += f'<p><video controls style="max-width:100%;"><source src="{item}" type="video/mp4"></video></p>'
+                    elif file_type == "gifs":
+                        html_content += f'<div><img src="{item}" alt="GIF" style="max-width:80%;height:auto;"></div>'
     
     html_content += "</body></html>"
     return html_content if total_items > 0 else None
@@ -329,7 +337,7 @@ def telegram_webhook():
         active_tasks[chat_id] = (executor, [])
 
         try:
-            media_by_year = {year: {'images': [], 'videos': [], 'gifs': []} for year in range(start_year, end_year + 1)}
+            media_by_date = {year: {'images': {}, 'videos': {}, 'gifs': {}} for year in range(start_year, end_year + 1)}
             all_post_links = []
             seen_links = set()
             global_seen = {'images': set(), 'videos': set(), 'gifs': set()}
@@ -342,17 +350,17 @@ def telegram_webhook():
             # Fetch initial page and total pages concurrently
             page_futures = {}
             url_page_cache = {}
-            for year, search_link in search_links:
-                urls_to_process = split_url(search_link, *re.search(r"c\[newer_than\]=(\d{4}-\d{2}-\d{2})&c\[older_than\]=(\d{4}-\d{2}-\d{2})", search_link).groups())
-                for url in urls_to_process:
+            for year, search_link, start_date, end_date in search_links:
+                urls_to_process = split_url(search_link, start_date, end_date)
+                for url, s_date, e_date in urls_to_process:
                     if url not in url_page_cache:
                         future = executor.submit(fetch_page_data, url)
-                        page_futures[future] = url  # Store URL with future
+                        page_futures[future] = (url, s_date, e_date)
             
             for future in as_completed(page_futures):
                 if chat_id not in active_tasks:
                     raise ScraperError("Task cancelled by user")
-                url = page_futures[future]  # Get URL from dictionary
+                url, _, _ = page_futures[future]
                 links, total_pages = future.result()
                 url_page_cache[url] = total_pages
                 all_post_links.extend(link for link in links if link not in seen_links)
@@ -361,9 +369,9 @@ def telegram_webhook():
             # Fetch remaining pages concurrently
             additional_futures = {}
             for url, total_pages in url_page_cache.items():
-                for page in range(2, total_pages + 1):  # Start from page 2
+                for page in range(2, total_pages + 1):
                     future = executor.submit(fetch_page_data, url, page)
-                    additional_futures[future] = url  # Store URL with future
+                    additional_futures[future] = url
             
             for future in as_completed(additional_futures):
                 if chat_id not in active_tasks:
@@ -377,7 +385,7 @@ def telegram_webhook():
                 return '', 200
 
             logger.info(f"Processing {len(all_post_links)} unique post links")
-            post_futures = [executor.submit(process_post, link, username, start_year, end_year, media_by_year, global_seen) for link in all_post_links]
+            post_futures = [executor.submit(process_post, link, username, start_year, end_year, media_by_date, global_seen) for link in all_post_links]
             active_tasks[chat_id] = (executor, post_futures)
 
             processed_count = 0
@@ -394,11 +402,11 @@ def telegram_webhook():
             
             any_sent = False
             for file_type in ["images", "videos", "gifs"]:
-                html_content = create_html(file_type, media_by_year, username, start_year, end_year)
+                html_content = create_html(file_type, media_by_date, username, start_year, end_year)
                 if html_content:
                     html_file = BytesIO(html_content.encode('utf-8'))
                     html_file.name = f"{username.replace(' ', '_')}_{file_type}.html"
-                    total_items = sum(len(media_by_year[year][file_type]) for year in media_by_year)
+                    total_items = sum(len(media_by_date[year][file_type][date]) for year in media_by_date for date in media_by_date[year][file_type])
                     send_telegram_document(chat_id=chat_id, file_buffer=html_file, filename=html_file.name, caption=f"Found {total_items} {file_type} for '{username}' ({start_year}-{end_year})")
                     any_sent = True
 
@@ -438,7 +446,6 @@ def telegram_webhook():
 def health_check():
     return jsonify({"status": "healthy", "time": datetime.now().isoformat()})
 
-# Set webhook for Railway
 def set_webhook():
     railway_url = os.environ.get('RAILWAY_PUBLIC_DOMAIN')
     if railway_url:
