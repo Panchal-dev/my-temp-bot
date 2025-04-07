@@ -24,7 +24,7 @@ app = Flask(__name__)
 # Configuration
 MAX_RETRIES = 3
 REQUEST_TIMEOUT = 20
-MAX_WORKERS = 5  # Works with Railway’s 1 vCPU
+MAX_WORKERS = 4  # Works with Railway’s 1 vCPU
 MAX_PAGES_PER_SEARCH = 9
 
 try:
