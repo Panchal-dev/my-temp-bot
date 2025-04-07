@@ -359,7 +359,7 @@ def telegram_webhook():
             additional_futures = []
             for url, total_pages in url_page_cache.items():
                 for page in range(2, total_pages + 1):  # Start from page 2 since page 1 is fetched
-                additional_futures.append(executor.submit(fetch_page_data, url, page))
+                    additional_futures.append(executor.submit(fetch_page_data, url, page))
             
             for future in as_completed(additional_futures):
                 if chat_id not in active_tasks:
