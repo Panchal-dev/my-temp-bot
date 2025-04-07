@@ -23,7 +23,7 @@ app = Flask(__name__)
 
 # Configuration
 MAX_RETRIES = 3
-MAX_WORKERS = 7
+MAX_WORKERS = 5
 MAX_PAGES_PER_SEARCH = 10  # Threshold for splitting
 
 # Telegram Bot Setup
@@ -38,9 +38,9 @@ except Exception as e:
     raise
 
 # Proxy configuration
-PROXY = {"http": "146.56.142.114:1080", "https": "146.56.142.114:1080"}
+PROXY =  {"http": "http://43.153.79.36:13001", "https": "http://43.153.79.36:13001"}
 FALLBACK_PROXIES = [
-    {"http": "http://43.153.79.36:13001", "https": "http://43.153.79.36:13001"},
+    {"http": "146.56.142.114:1080", "https": "146.56.142.114:1080"},
     {"http": "http://45.140.143.77:18080", "https": "http://45.140.143.77:18080"},
     {"http": "http://172.188.122.92:80", "https": "http://172.188.122.92:80"}
 ]
@@ -57,7 +57,7 @@ active_tasks = {}
 ALLOWED_CHAT_IDS = {5809601894, 1285451259}
 
 def make_request(url, method='get', **kwargs):
-    initial_timeout = 10
+    initial_timeout = 11
     timeout_increment = 5
     proxies = [PROXY] + FALLBACK_PROXIES
 
