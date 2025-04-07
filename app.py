@@ -38,10 +38,10 @@ except Exception as e:
     raise
 
 # Proxy configuration
-PROXY =  {"http": "http://43.153.79.36:13001", "https": "http://43.153.79.36:13001"}
+PROXY =  {"http": "http://146.56.142.114:1080", "https": "http://146.56.142.114:1080"}
 FALLBACK_PROXIES = [
-    {"http": "http://146.56.142.114:1080", "https": "http://146.56.142.114:1080"},
     {"http": "http://45.140.143.77:18080", "https": "http://45.140.143.77:18080"},
+    {"http": "http://172.188.122.92:80", "https": "http://172.188.122.92:80"},
     {"http": "http://172.188.122.92:80", "https": "http://172.188.122.92:80"}
 ]
 
