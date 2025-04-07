@@ -22,7 +22,7 @@ logger = logging.getLogger(__name__)
 app = Flask(__name__)
 
 # Configuration
-MAX_RETRIES = 2  # Maximum retries as per needed
+MAX_RETRIES = 3  # Maximum retries as per needed
 MAX_WORKERS = 8  # Increased for parallelism on Railway’s 1 vCPU
 MAX_PAGES_PER_SEARCH = 9  # Increased to reduce splitting frequency
 
@@ -38,7 +38,8 @@ except Exception as e:
     raise
 
 # Proxy configuration
-PROXY = {"http": "http://34.143.143.61:7777", "https": "http://34.143.143.61:7777"}
+# PROXY = {"http": "http://34.143.143.61:7777", "https": "http://34.143.143.61:7777"}
+PROXY = {"http": "146.56.142.114:1080", "https": "146.56.142.114:1080"}
 FALLBACK_PROXIES = [
     {"http": "http://43.153.79.36:13001", "https": "http://43.153.79.36:13001"},
     {"http": "http://45.140.143.77:18080", "https": "http://45.140.143.77:18080"},
