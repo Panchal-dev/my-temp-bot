@@ -23,24 +23,13 @@ app = Flask(__name__)
 
 # Configuration
 MAX_RETRIES = 3
-MAX_WORKERS = 5
+MAX_WORKERS = 6  # Total workers
 MAX_PAGES_PER_SEARCH = 10  # Threshold for splitting
 
-# Telegram Bot Setup
-try:
-    TELEGRAM_BOT_TOKEN = os.environ['TELEGRAM_BOT_TOKEN']
-    bot = telebot.TeleBot(TELEGRAM_BOT_TOKEN)
-except KeyError:
-    logger.error("TELEGRAM_BOT_TOKEN environment variable not set!")
-    raise
-except Exception as e:
-    logger.error(f"Failed to initialize bot: {str(e)}")
-    raise
-
 # Proxy configuration
-PROXY =  {"http": "http://157.230.40.77:1004", "https": "http://157.230.40.77:1004"}
+PROXY_GROUP_1 = {"http": "http://157.230.40.77:1004", "https": "http://157.230.40.77:1004"}  # 3 workers
+PROXY_GROUP_2 = {"http": "http://146.56.142.114:1080", "https": "http://146.56.142.114:1080"}  # 3 workers
 FALLBACK_PROXIES = [
-    {"http": "http://146.56.142.114:1080", "https": "http://146.56.142.114:1080"},
     {"http": "http://45.140.143.77:18080", "https": "http://45.140.143.77:18080"},
     {"http": "http://172.188.122.92:80", "https": "http://172.188.122.92:80"}
 ]
@@ -56,12 +45,13 @@ active_tasks = {}
 # Allowed chat IDs
 ALLOWED_CHAT_IDS = {5809601894, 1285451259}
 
-def make_request(url, method='get', **kwargs):
+def make_request(url, method='get', proxy_group=None, **kwargs):
     initial_timeout = 11
     timeout_increment = 5
-    proxies = [PROXY] + FALLBACK_PROXIES
+    proxies = [proxy_group] + FALLBACK_PROXIES if proxy_group else FALLBACK_PROXIES
 
     for proxy_idx, proxy in enumerate(proxies):
+        logger.info(f"Trying proxy {proxy_idx + 1}: {proxy['https']}")
         for attempt in range(MAX_RETRIES):
             current_timeout = initial_timeout + (attempt * timeout_increment)
             try:
@@ -77,6 +67,9 @@ def make_request(url, method='get', **kwargs):
                 return response
             except requests.exceptions.RequestException as e:
                 logger.warning(f"Attempt {attempt + 1} failed for {url} with proxy {proxy_idx + 1}: {str(e)}")
+                if '503 Service Unavailable' in str(e):
+                    logger.warning(f"503 detected, waiting 10 seconds before retry")
+                    time.sleep(10)
                 if attempt == MAX_RETRIES - 1 and proxy_idx == len(proxies) - 1:
                     raise ScraperError(f"All proxies failed for {url} after {MAX_RETRIES} attempts: {str(e)}")
                 elif attempt == MAX_RETRIES - 1:
@@ -112,7 +105,7 @@ def split_url(url, start_date, end_date, max_pages=MAX_PAGES_PER_SEARCH):
     try:
         start_dt = datetime.strptime(start_date, "%Y-%m-%d")
         end_dt = datetime.strptime(end_date, "%Y-%m-%d")
-        response = make_request(url)
+        response = make_request(url, proxy_group=PROXY_GROUP_1)
         soup = BeautifulSoup(response.text, 'html.parser')
         pagination = soup.find('div', class_='pageNav')
         total_pages = max([int(link.text.strip()) for link in pagination.find_all('a') if link.text.strip().isdigit()]) if pagination else 1
@@ -134,10 +127,10 @@ def split_url(url, start_date, end_date, max_pages=MAX_PAGES_PER_SEARCH):
         logger.error(f"Split error for {url}: {str(e)}")
         return [(url, start_date, end_date)]
 
-def fetch_page_data(url, page=None):
+def fetch_page_data(url, page=None, proxy_group=None):
     try:
         full_url = f"{url}&page={page}" if page else url
-        response = make_request(full_url)
+        response = make_request(full_url, proxy_group=proxy_group)
         soup = BeautifulSoup(response.text, 'html.parser')
         links = list(dict.fromkeys(urljoin(BASE_URL, link['href']) for link in soup.find_all('a', href=True) 
                                   if 'threads/' in link['href'] and not link['href'].startswith('#') and 'page-' not in link['href']))
@@ -148,9 +141,9 @@ def fetch_page_data(url, page=None):
         logger.error(f"Failed to fetch page data for {full_url}: {str(e)}")
         return [], 1
 
-def process_post(post_link, username, start_year, end_year, media_by_date, global_seen):
+def process_post(post_link, username, start_year, end_year, media_by_date, global_seen, proxy_group=None):
     try:
-        response = make_request(post_link)
+        response = make_request(post_link, proxy_group=proxy_group)
         soup = BeautifulSoup(response.text, 'html.parser')
         
         date = None
@@ -242,7 +235,6 @@ def create_html(file_type, media_by_date, username, start_year, end_year):
             for date in sorted(items_by_date.keys(), reverse=True):
                 items = items_by_date[date]
                 total_items += len(items)
-                html_content += f"<h3>{date}</h3>"
                 for item in items:
                     if file_type == "images":
                         html_content += f'<div><img src="{item}" alt="Image" style="max-width:80%;height:auto;"></div>'
@@ -333,6 +325,7 @@ def telegram_webhook():
 
         progress_msg = send_telegram_message(chat_id=chat_id, text=f"🔍 Processing '{username}' ({start_year}-{end_year})...")
 
+        # Split workers: 3 for PROXY_GROUP_1, 3 for PROXY_GROUP_2
         executor = ThreadPoolExecutor(max_workers=MAX_WORKERS)
         active_tasks[chat_id] = (executor, [])
 
@@ -347,14 +340,25 @@ def telegram_webhook():
                 bot.edit_message_text(chat_id=chat_id, message_id=progress_msg.message_id, text=f"⚠️ No search URLs for '{username}'")
                 return '', 200
 
+            # Split links between two proxy groups
+            mid_point = len(search_links) // 2
+            group1_links = search_links[:mid_point]
+            group2_links = search_links[mid_point:]
+
             # Fetch initial page and total pages concurrently
             page_futures = {}
             url_page_cache = {}
-            for year, search_link, start_date, end_date in search_links:
+            for year, search_link, start_date, end_date in group1_links:
                 urls_to_process = split_url(search_link, start_date, end_date)
                 for url, s_date, e_date in urls_to_process:
                     if url not in url_page_cache:
-                        future = executor.submit(fetch_page_data, url)
+                        future = executor.submit(fetch_page_data, url, proxy_group=PROXY_GROUP_1)
+                        page_futures[future] = (url, s_date, e_date)
+            for year, search_link, start_date, end_date in group2_links:
+                urls_to_process = split_url(search_link, start_date, end_date)
+                for url, s_date, e_date in urls_to_process:
+                    if url not in url_page_cache:
+                        future = executor.submit(fetch_page_data, url, proxy_group=PROXY_GROUP_2)
                         page_futures[future] = (url, s_date, e_date)
             
             for future in as_completed(page_futures):
@@ -369,8 +373,9 @@ def telegram_webhook():
             # Fetch remaining pages concurrently
             additional_futures = {}
             for url, total_pages in url_page_cache.items():
+                proxy_group = PROXY_GROUP_1 if any(url in u for _, u, _, _ in group1_links) else PROXY_GROUP_2
                 for page in range(2, total_pages + 1):
-                    future = executor.submit(fetch_page_data, url, page)
+                    future = executor.submit(fetch_page_data, url, page, proxy_group=proxy_group)
                     additional_futures[future] = url
             
             for future in as_completed(additional_futures):
@@ -385,7 +390,13 @@ def telegram_webhook():
                 return '', 200
 
             logger.info(f"Processing {len(all_post_links)} unique post links")
-            post_futures = [executor.submit(process_post, link, username, start_year, end_year, media_by_date, global_seen) for link in all_post_links]
+            mid_point = len(all_post_links) // 2
+            group1_posts = all_post_links[:mid_point]
+            group2_posts = all_post_links[mid_point:]
+            post_futures = (
+                [executor.submit(process_post, link, username, start_year, end_year, media_by_date, global_seen, PROXY_GROUP_1) for link in group1_posts] +
+                [executor.submit(process_post, link, username, start_year, end_year, media_by_date, global_seen, PROXY_GROUP_2) for link in group2_posts]
+            )
             active_tasks[chat_id] = (executor, post_futures)
 
             processed_count = 0
@@ -454,6 +465,17 @@ def set_webhook():
         logger.info(f"Webhook set to: {webhook_url}")
     else:
         logger.error("RAILWAY_PUBLIC_DOMAIN not set")
+
+# Telegram Bot Setup
+try:
+    TELEGRAM_BOT_TOKEN = os.environ['TELEGRAM_BOT_TOKEN']
+    bot = telebot.TeleBot(TELEGRAM_BOT_TOKEN)
+except KeyError:
+    logger.error("TELEGRAM_BOT_TOKEN environment variable not set!")
+    raise
+except Exception as e:
+    logger.error(f"Failed to initialize bot: {str(e)}")
+    raise
 
 if __name__ == "__main__":
     set_webhook()
