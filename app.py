@@ -40,6 +40,10 @@ except Exception as e:
 # List of proxies to try sequentially
 PROXIES = [
     {
+        "http": "http://34.143.143.61:7777",
+        "https": "http://34.143.143.61:7777"
+    },
+    {
         "http": "http://45.140.143.77:18080",
         "https": "http://45.140.143.77:18080"
     },
