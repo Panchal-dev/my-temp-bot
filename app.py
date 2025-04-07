@@ -1,16 +1,19 @@
-import os
 import requests
 from bs4 import BeautifulSoup
+import os
 import re
-import logging
 from urllib.parse import urljoin
-from flask import Flask, request, jsonify
+from tqdm import tqdm
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from colorama import Fore, Style, init
+import shutil
+from datetime import datetime, timedelta
+import time
+import logging
+from flask import Flask, request, jsonify
 from io import BytesIO
 import telebot
-from datetime import datetime, timedelta
 import traceback
-import time
 
 # Initialize logging
 logging.basicConfig(
@@ -23,8 +26,8 @@ app = Flask(__name__)
 
 # Configuration
 MAX_RETRIES = 3
-MAX_WORKERS = 5
-MAX_PAGES_PER_SEARCH = 10  # Threshold for splitting
+MAX_WORKERS = 10  # Increased from 5 for speed
+MAX_PAGES_PER_SEARCH = 10
 
 # Telegram Bot Setup
 try:
@@ -38,11 +41,11 @@ except Exception as e:
     raise
 
 # Proxy configuration
-PROXY =  {"http": "http://146.56.142.114:1080", "https": "http://146.56.142.114:1080"}
+PROXY = {"http": "http://146.56.142.114:1080", "https": "http://146.56.142.114:1080"}
 FALLBACK_PROXIES = [
     {"http": "http://45.140.143.77:18080", "https": "http://45.140.143.77:18080"},
     {"http": "http://172.188.122.92:80", "https": "http://172.188.122.92:80"},
-    {"http": "http://172.188.122.92:80", "https": "http://172.188.122.92:80"}
+    {"http": "http://157.230.40.77:1004", "https": "http://157.230.40.77:1004"}
 ]
 
 BASE_URL = "https://desifakes.com"
@@ -57,7 +60,7 @@ active_tasks = {}
 ALLOWED_CHAT_IDS = {5809601894, 1285451259}
 
 def make_request(url, method='get', **kwargs):
-    initial_timeout = 11
+    initial_timeout = 10
     timeout_increment = 5
     proxies = [PROXY] + FALLBACK_PROXIES
 
@@ -84,29 +87,13 @@ def make_request(url, method='get', **kwargs):
                     break
                 time.sleep(1 * (attempt + 1))
 
-def generate_links(start_year, end_year, username, title_only=False):
-    if not username or not isinstance(username, str):
-        raise ValueError("Invalid username")
-    
-    current_date = datetime.now()
-    current_year = current_date.year
-    start_year = max(2010, min(start_year, current_year))
-    end_year = min(current_year, max(end_year, start_year))
-    
-    links = []
-    for year in range(end_year, start_year - 1, -1):  # Descending order
-        start_date = f"{year}-01-01"
-        end_date = f"{year}-12-31" if year < current_year or current_date.strftime("%Y-%m-%d") > f"{year}-12-31" else current_date.strftime("%Y-%m-%d")
-        url = (
-            f"{BASE_URL}/search/39143295/?q={username.replace(' ', '+')}"
-            f"&c[newer_than]={start_date}"
-            f"&c[older_than]={end_date}"
-            f"&c[title_only]={1 if title_only else 0}"
-            "&o=date"
-        )
-        links.append((year, url, start_date, end_date))
-    logger.info(f"Generated {len(links)} search URLs for {username}")
-    return links
+def generate_year_link(year, username, title_only=False):
+    start_date = f"{year}-01-01"
+    end_date = f"{year}-12-31"
+    url = f"{BASE_URL}/search/39143295/?q={username.replace(' ', '+')}&c[newer_than]={start_date}&c[older_than]={end_date}"
+    url += "&c[title_only]=1" if title_only else "&c[title_only]=0"
+    url += "&o=date"  # Newest first
+    return url
 
 def split_url(url, start_date, end_date, max_pages=MAX_PAGES_PER_SEARCH):
     try:
@@ -117,7 +104,7 @@ def split_url(url, start_date, end_date, max_pages=MAX_PAGES_PER_SEARCH):
         pagination = soup.find('div', class_='pageNav')
         total_pages = max([int(link.text.strip()) for link in pagination.find_all('a') if link.text.strip().isdigit()]) if pagination else 1
         if total_pages < max_pages:
-            return [(url, start_date, end_date)]
+            return [url]
         
         total_days = (end_dt - start_dt).days
         mid_dt = start_dt + timedelta(days=total_days // 2)
@@ -132,96 +119,68 @@ def split_url(url, start_date, end_date, max_pages=MAX_PAGES_PER_SEARCH):
         return split_url(first_url, first_range[0], first_range[1]) + split_url(second_url, second_range[0], second_range[1])
     except Exception as e:
         logger.error(f"Split error for {url}: {str(e)}")
-        return [(url, start_date, end_date)]
+        return [url]
 
-def fetch_page_data(url, page=None):
+def scrape_post_links(search_url):
     try:
-        full_url = f"{url}&page={page}" if page else url
-        response = make_request(full_url)
+        response = make_request(search_url)
         soup = BeautifulSoup(response.text, 'html.parser')
-        links = list(dict.fromkeys(urljoin(BASE_URL, link['href']) for link in soup.find_all('a', href=True) 
-                                  if 'threads/' in link['href'] and not link['href'].startswith('#') and 'page-' not in link['href']))
-        pagination = soup.find('div', class_='pageNav')
-        total_pages = max([int(link.text.strip()) for link in pagination.find_all('a') if link.text.strip().isdigit()]) if pagination else 1
-        return links, total_pages
+        return list(dict.fromkeys(urljoin(BASE_URL, link['href']) for link in soup.find_all('a', href=True) 
+                                 if 'threads/' in link['href'] and not link['href'].startswith('#') and not 'page-' in link['href']))
     except Exception as e:
-        logger.error(f"Failed to fetch page data for {full_url}: {str(e)}")
-        return [], 1
+        logger.error(f"Failed to scrape post links for {search_url}: {str(e)}")
+        return []
 
-def process_post(post_link, username, start_year, end_year, media_by_date, global_seen):
+def process_post(post_link, username, year, media_by_year):
     try:
         response = make_request(post_link)
         soup = BeautifulSoup(response.text, 'html.parser')
+        post_id = re.search(r'post-(\d+)', post_link).group(1) if re.search(r'post-(\d+)', post_link) else None
+        articles = [soup.find('article', {'data-content': f'post-{post_id}', 'id': f'js-post-{post_id}'})] if post_id else soup.find_all('article')
         
-        date = None
-        date_elem = soup.find('time', class_='u-dt')
-        if date_elem and 'datetime' in date_elem.attrs:
-            try:
-                post_date = datetime.strptime(date_elem['datetime'], "%Y-%m-%dT%H:%M:%S%z")
-                date = post_date.strftime("%Y-%m-%d")
-                year = post_date.year
-            except ValueError:
-                pass
-        
-        if not date and date_elem:
-            match = re.search(r'(\d{4})-(\d{2})-(\d{2})', date_elem.get_text(strip=True))
-            if match:
-                date = f"{match.group(1)}-{match.group(2)}-{match.group(3)}"
-                year = int(match.group(1))
-        
-        if not date:
-            year = start_year
-            date = f"{year}-01-01"
-        
-        if year < start_year or year > end_year:
-            return
-        
-        post_id = re.search(r'post-(\d+)', post_link)
-        articles = [soup.find('article', {'data-content': f'post-{post_id.group(1)}', 'id': f'js-post-{post_id.group(1)}'})] if post_id else soup.find_all('article')
         username_lower = username.lower()
-        filtered_articles = [a for a in articles if a and (username_lower in a.get_text(separator=" ").lower() or username_lower in a.get('data-author', '').lower())]
+        articles = [a for a in articles if a and (username_lower in a.get_text(separator=" ").lower() or username_lower in a.get('data-author', '').lower())]
         
-        for article in filtered_articles:
-            for img in article.find_all('img', src=True):
-                src = urljoin(BASE_URL, img['src']) if img['src'].startswith("/") else img['src']
+        for article in articles:
+            for media in article.find_all(['img', 'video', 'source'], src=True):
+                src = urljoin(BASE_URL, media['src']) if media['src'].startswith("/") else media['src']
                 if (src.startswith("data:image") or "addonflare/awardsystem/icons/" in src or
                     any(keyword in src.lower() for keyword in ["avatars", "ozzmodz_badges_badge", "premium", "likes"])):
                     continue
-                media_type = "gifs" if src.endswith(".gif") else "images"
-                if src not in global_seen[media_type]:
-                    global_seen[media_type].add(src)
-                    if date not in media_by_date[year][media_type]:
-                        media_by_date[year][media_type][date] = []
-                    media_by_date[year][media_type][date].append(src)
-            
-            for video in article.find_all('video', src=True):
-                src = urljoin(BASE_URL, video['src']) if video['src'].startswith("/") else video['src']
-                if src not in global_seen['videos']:
-                    global_seen['videos'].add(src)
-                    if date not in media_by_date[year]['videos']:
-                        media_by_date[year]['videos'][date] = []
-                    media_by_date[year]['videos'][date].append(src)
-            
-            for source in article.find_all('source', src=True):
-                src = urljoin(BASE_URL, source['src']) if source['src'].startswith("/") else source['src']
-                if src not in global_seen['videos']:
-                    global_seen['videos'].add(src)
-                    if date not in media_by_date[year]['videos']:
-                        media_by_date[year]['videos'][date] = []
-                    media_by_date[year]['videos'][date].append(src)
-            
-            for link in article.find_all('a', href=True):
-                href = urljoin(BASE_URL, link['href']) if link['href'].startswith("/") else link['href']
-                if any(href.lower().endswith(ext) for ext in ['.mp4', '.webm', '.mov']):
-                    if href not in global_seen['videos']:
-                        global_seen['videos'].add(href)
-                        if date not in media_by_date[year]['videos']:
-                            media_by_date[year]['videos'][date] = []
-                        media_by_date[year]['videos'][date].append(href)
+                if media.name == 'img':
+                    media_type = "gifs" if src.endswith(".gif") else "images"
+                    media_by_year[year][media_type].append(src)
+                elif media.name in ['video', 'source']:
+                    media_by_year[year]['videos'].append(src)
     except Exception as e:
         logger.error(f"Failed to process post {post_link}: {str(e)}")
 
-def create_html(file_type, media_by_date, username, start_year, end_year):
+def process_year(year, search_url, username, media_by_year):
+    total_pages = 0
+    try:
+        response = make_request(search_url)
+        soup = BeautifulSoup(response.text, 'html.parser')
+        pagination = soup.find('div', class_='pageNav')
+        total_pages = max([int(link.text.strip()) for link in pagination.find_all('a') if link.text.strip().isdigit()]) if pagination else 1
+    except Exception as e:
+        logger.error(f"Failed to fetch total pages for {search_url}: {str(e)}")
+        total_pages = 1
+
+    urls_to_process = split_url(search_url, f"{year}-01-01", f"{year}-12-31") if total_pages >= MAX_PAGES_PER_SEARCH else [search_url]
+    
+    for url in urls_to_process:
+        with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
+            futures = []
+            for page in range(total_pages, 0, -1):  # Descending order
+                page_url = f"{url}&page={page}"
+                post_links = scrape_post_links(page_url)
+                for post in post_links:
+                    futures.append(executor.submit(process_post, post, username, year, media_by_year))
+            
+            for future in as_completed(futures):
+                future.result()  # Ensure all posts are processed
+
+def create_html(file_type, media_by_year, username, start_year, end_year):
     html_content = f"""<!DOCTYPE html><html><head>
     <title>{username} - {file_type.capitalize()} Links</title>
     <meta charset="UTF-8">
@@ -235,15 +194,15 @@ def create_html(file_type, media_by_date, username, start_year, end_year):
     <h1>{username} - {file_type.capitalize()} Links ({start_year}-{end_year})</h1>"""
     
     total_items = 0
-    for year in sorted(media_by_date.keys(), reverse=True):
-        items_by_date = media_by_date[year][file_type]
-        if items_by_date:
+    seen_urls = set()  # Deduplicate by full URL
+    for year in sorted(media_by_year.keys(), reverse=True):
+        items = media_by_year[year][file_type]
+        if items:
             html_content += f"<h2>{year}</h2>"
-            for date in sorted(items_by_date.keys(), reverse=True):
-                items = items_by_date[date]
-                total_items += len(items)
-                html_content += f"<h3>{date}</h3>"
-                for item in items:
+            for item in items:  # Items already in order from scraping
+                if item not in seen_urls:
+                    seen_urls.add(item)
+                    total_items += 1
                     if file_type == "images":
                         html_content += f'<div><img src="{item}" alt="Image" style="max-width:80%;height:auto;"></div>'
                     elif file_type == "videos":
@@ -337,76 +296,31 @@ def telegram_webhook():
         active_tasks[chat_id] = (executor, [])
 
         try:
-            media_by_date = {year: {'images': {}, 'videos': {}, 'gifs': {}} for year in range(start_year, end_year + 1)}
-            all_post_links = []
-            seen_links = set()
-            global_seen = {'images': set(), 'videos': set(), 'gifs': set()}
+            media_by_year = {year: {'images': [], 'videos': [], 'gifs': []} for year in range(start_year, end_year + 1)}
+            years = list(range(end_year, start_year - 1, -1))
             
-            search_links = generate_links(start_year, end_year, username, title_only)
-            if not search_links:
-                bot.edit_message_text(chat_id=chat_id, message_id=progress_msg.message_id, text=f"⚠️ No search URLs for '{username}'")
-                return '', 200
-
-            # Fetch initial page and total pages concurrently
-            page_futures = {}
-            url_page_cache = {}
-            for year, search_link, start_date, end_date in search_links:
-                urls_to_process = split_url(search_link, start_date, end_date)
-                for url, s_date, e_date in urls_to_process:
-                    if url not in url_page_cache:
-                        future = executor.submit(fetch_page_data, url)
-                        page_futures[future] = (url, s_date, e_date)
+            futures = []
+            for year in years:
+                search_url = generate_year_link(year, username, title_only)
+                future = executor.submit(process_year, year, search_url, username, media_by_year)
+                futures.append(future)
             
-            for future in as_completed(page_futures):
-                if chat_id not in active_tasks:
-                    raise ScraperError("Task cancelled by user")
-                url, _, _ = page_futures[future]
-                links, total_pages = future.result()
-                url_page_cache[url] = total_pages
-                all_post_links.extend(link for link in links if link not in seen_links)
-                seen_links.update(links)
-
-            # Fetch remaining pages concurrently
-            additional_futures = {}
-            for url, total_pages in url_page_cache.items():
-                for page in range(2, total_pages + 1):
-                    future = executor.submit(fetch_page_data, url, page)
-                    additional_futures[future] = url
-            
-            for future in as_completed(additional_futures):
-                if chat_id not in active_tasks:
-                    raise ScraperError("Task cancelled by user")
-                links, _ = future.result()
-                all_post_links.extend(link for link in links if link not in seen_links)
-                seen_links.update(links)
-
-            if not all_post_links:
-                bot.edit_message_text(chat_id=chat_id, message_id=progress_msg.message_id, text=f"⚠️ No posts found for '{username}' ({start_year}-{end_year})")
-                return '', 200
-
-            logger.info(f"Processing {len(all_post_links)} unique post links")
-            post_futures = [executor.submit(process_post, link, username, start_year, end_year, media_by_date, global_seen) for link in all_post_links]
-            active_tasks[chat_id] = (executor, post_futures)
-
-            processed_count = 0
-            total_posts = len(all_post_links)
-            for future in as_completed(post_futures):
+            active_tasks[chat_id] = (executor, futures)
+            for future in as_completed(futures):
                 if chat_id not in active_tasks:
                     raise ScraperError("Task cancelled by user")
                 future.result()
-                processed_count += 1
-                if processed_count % 10 == 0 or processed_count == total_posts:
-                    bot.edit_message_text(chat_id=chat_id, message_id=progress_msg.message_id, text=f"🔍 Processing '{username}' ({start_year}-{end_year}): {processed_count}/{total_posts} posts")
+                bot.edit_message_text(chat_id=chat_id, message_id=progress_msg.message_id, text=f"🔍 Processing '{username}' ({start_year}-{end_year}): {years.index(year) + 1}/{len(years)} years done")
 
             bot.delete_message(chat_id=chat_id, message_id=progress_msg.message_id)
             
             any_sent = False
             for file_type in ["images", "videos", "gifs"]:
-                html_content = create_html(file_type, media_by_date, username, start_year, end_year)
+                html_content = create_html(file_type, media_by_year, username, start_year, end_year)
                 if html_content:
                     html_file = BytesIO(html_content.encode('utf-8'))
                     html_file.name = f"{username.replace(' ', '_')}_{file_type}.html"
-                    total_items = sum(len(media_by_date[year][file_type][date]) for year in media_by_date for date in media_by_date[year][file_type])
+                    total_items = sum(len(media_by_year[year][file_type]) for year in media_by_year)
                     send_telegram_document(chat_id=chat_id, file_buffer=html_file, filename=html_file.name, caption=f"Found {total_items} {file_type} for '{username}' ({start_year}-{end_year})")
                     any_sent = True
 
