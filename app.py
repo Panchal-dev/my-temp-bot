@@ -22,9 +22,9 @@ logger = logging.getLogger(__name__)
 app = Flask(__name__)
 
 # Configuration
-MAX_RETRIES = 3
-REQUEST_TIMEOUT = 20
-MAX_WORKERS = 4  # Optimized for Railway’s 1 vCPU
+MAX_RETRIES = 4
+REQUEST_TIMEOUT = 15
+MAX_WORKERS = 5  # Optimized for Railway’s 1 vCPU
 MAX_PAGES_PER_SEARCH = 9
 
 try:
@@ -172,25 +172,30 @@ def process_post(post_link, username, start_year, end_year, media_by_year, globa
         response = make_request(post_link)
         soup = BeautifulSoup(response.text, 'html.parser')
         
-        # Extract post date
+        # Extract post date with multiple fallbacks
         year = None
         date_elem = soup.find('time', class_='u-dt')
         if date_elem and 'datetime' in date_elem.attrs:
             try:
                 post_date = datetime.strptime(date_elem['datetime'], "%Y-%m-%dT%H:%M:%S%z")
                 year = post_date.year
+                logger.info(f"Parsed datetime {post_date} for {post_link}, year: {year}")
             except ValueError:
-                pass
+                logger.warning(f"Invalid datetime format for {post_link}: {date_elem['datetime']}")
         
         if not year and date_elem:
-            match = re.search(r'(\d{4})', date_elem.get_text(strip=True))
+            date_text = date_elem.get_text(strip=True)
+            match = re.search(r'(\d{4})', date_text)
             if match:
                 year = int(match.group(1))
+                logger.info(f"Parsed year {year} from text for {post_link}")
         
         if not year:
-            year = start_year  # Default to start_year if date not found
+            year = start_year
+            logger.warning(f"Date not found for {post_link}, defaulting to {year}")
 
         if year < start_year or year > end_year:
+            logger.info(f"Skipping {post_link} - year {year} outside range {start_year}-{end_year}")
             return
         
         post_id = re.search(r'post-(\d+)', post_link)
@@ -213,41 +218,52 @@ def process_post(post_link, username, start_year, end_year, media_by_year, globa
         ]
         
         for article in filtered_articles:
+            media_order = []
+            
+            # Extract images and GIFs
             for img in article.find_all('img', src=True):
-                src = urljoin(BASE_URL, img['src']) if img['src'].startswith("/") else img['src']
+                src = img['src']
+                full_src = urljoin(BASE_URL, src) if src.startswith("/") else src
                 if (src.startswith("data:image") or 
                     "addonflare/awardsystem/icons/" in src or
                     any(kw in src.lower() for kw in ["avatars", "ozzmodz_badges_badge", "premium", "likes"])):
                     continue
-                media_type = 'gifs' if src.endswith(".gif") else 'images'
-                if src not in global_seen[media_type]:
-                    global_seen[media_type].add(src)
-                    media_by_year[year][media_type].append(src)
+                if src.endswith(".gif"):
+                    media_order.append(('gifs', full_src))
+                else:
+                    media_order.append(('images', full_src))
             
+            # Extract videos from video tags
             for video in article.find_all('video'):
                 if video.get('src'):
-                    src = urljoin(BASE_URL, video['src']) if video['src'].startswith("/") else video['src']
-                    if src not in global_seen['videos']:
-                        global_seen['videos'].add(src)
-                        media_by_year[year]['videos'].append(src)
+                    full_src = urljoin(BASE_URL, video['src']) if video['src'].startswith("/") else video['src']
+                    logger.info(f"Found video tag src: {full_src}")
+                    media_order.append(('videos', full_src))
                 for source in video.find_all('source', src=True):
-                    src = urljoin(BASE_URL, source['src']) if source['src'].startswith("/") else source['src']
-                    if src not in global_seen['videos']:
-                        global_seen['videos'].add(src)
-                        media_by_year[year]['videos'].append(src)
+                    full_src = urljoin(BASE_URL, source['src']) if source['src'].startswith("/") else source['src']
+                    logger.info(f"Found video source: {full_src}")
+                    media_order.append(('videos', full_src))
             
+            # Extract standalone sources
             for source in article.find_all('source', src=True):
-                src = urljoin(BASE_URL, source['src']) if source['src'].startswith("/") else source['src']
-                if src not in global_seen['videos']:
-                    global_seen['videos'].add(src)
-                    media_by_year[year]['videos'].append(src)
+                full_src = urljoin(BASE_URL, source['src']) if source['src'].startswith("/") else source['src']
+                logger.info(f"Found standalone source: {full_src}")
+                media_order.append(('videos', full_src))
             
+            # Extract video links from <a> tags
             for link in article.find_all('a', href=True):
-                href = urljoin(BASE_URL, link['href']) if link['href'].startswith("/") else link['href']
-                if any(href.lower().endswith(ext) for ext in ['.mp4', '.webm', '.mov']):
-                    if href not in global_seen['videos']:
-                        global_seen['videos'].add(href)
-                        media_by_year[year]['videos'].append(href)
+                href = link['href']
+                full_href = urljoin(BASE_URL, href) if href.startswith("/") else href
+                if any(full_href.lower().endswith(ext) for ext in ['.mp4', '.webm', '.mov']):
+                    logger.info(f"Found video link: {full_href}")
+                    media_order.append(('videos', full_href))
+            
+            # Append media in order with deduplication
+            for media_type, url in media_order:
+                if url not in global_seen[media_type]:
+                    global_seen[media_type].add(url)
+                    media_by_year[year][media_type].append(url)
+
     except Exception as e:
         logger.error(f"Failed to process post {post_link}: {str(e)}")
 
@@ -330,68 +346,115 @@ def telegram_webhook():
         text = update['message'].get('text', '').strip()
 
         if chat_id not in ALLOWED_CHAT_IDS:
-            send_telegram_message(chat_id=chat_id, text="❌ This bot is restricted to specific users only.", reply_to_message_id=message_id)
+            send_telegram_message(
+                chat_id=chat_id,
+                text="❌ This bot is restricted to specific users only.",
+                reply_to_message_id=message_id
+            )
             return '', 200
 
-        if not text or text.lower() == '/start':
-            send_telegram_message(chat_id=chat_id, text="Usage: username [title_only y/n] [start_year] [end_year]\nExample: 'Saiee Manjrekar' n 2019 2025\nUse /stop to cancel", reply_to_message_id=message_id)
+        if not text:
+            send_telegram_message(
+                chat_id=chat_id,
+                text="Please send a search query",
+                reply_to_message_id=message_id
+            )
             return '', 200
 
         if text.lower() == '/stop':
             if cancel_task(chat_id):
-                send_telegram_message(chat_id=chat_id, text="✅ Scraping process stopped immediately", reply_to_message_id=message_id)
+                send_telegram_message(
+                    chat_id=chat_id,
+                    text="✅ Scraping process stopped immediately",
+                    reply_to_message_id=message_id
+                )
             else:
-                send_telegram_message(chat_id=chat_id, text="ℹ️ No active scraping process to stop", reply_to_message_id=message_id)
-            return '', 200
-
-        if chat_id in active_tasks:
-            send_telegram_message(chat_id=chat_id, text="⚠️ A scraping process is already running. Use /stop to cancel it first.", reply_to_message_id=message_id)
+                send_telegram_message(
+                    chat_id=chat_id,
+                    text="ℹ️ No active scraping process to stop",
+                    reply_to_message_id=message_id
+                )
             return '', 200
 
         parts = text.split()
         if len(parts) < 1 or (parts[0] == '/start' and len(parts) < 2):
-            send_telegram_message(chat_id=chat_id, text="Usage: username [title_only y/n] [start_year] [end_year]\nExample: 'Saiee Manjrekar' n 2019 2025\nUse /stop to cancel", reply_to_message_id=message_id)
+            send_telegram_message(
+                chat_id=chat_id,
+                text="Usage: username [title_only y/n] [start_year] [end_year]\nExample: 'Saiee Manjrekar' n 2019 2025\nUse /stop to cancel",
+                reply_to_message_id=message_id
+            )
             return '', 200
 
-        username = ' '.join(parts[1:-3]) if parts[0] == '/start' and len(parts) > 4 else ' '.join(parts[:-3]) if len(parts) > 3 else parts[0]
-        title_only_idx = (2 if len(parts) <= 4 else len(parts) - 3) if parts[0] == '/start' else (1 if len(parts) <= 3 else len(parts) - 3)
+        if chat_id in active_tasks:
+            send_telegram_message(
+                chat_id=chat_id,
+                text="⚠️ A scraping process is already running. Use /stop to cancel it first.",
+                reply_to_message_id=message_id
+            )
+            return '', 200
+
+        if parts[0] == '/start':
+            username = ' '.join(parts[1:-3]) if len(parts) > 4 else parts[1]
+            title_only_idx = 2 if len(parts) <= 4 else len(parts) - 3
+        else:
+            username = ' '.join(parts[:-3]) if len(parts) > 3 else parts[0]
+            title_only_idx = 1 if len(parts) <= 3 else len(parts) - 3
+        
         title_only = parts[title_only_idx].lower() == 'y' if len(parts) > title_only_idx else False
         start_year = int(parts[-2]) if len(parts) > 2 else 2019
         end_year = int(parts[-1]) if len(parts) > 1 else datetime.now().year
 
-        progress_msg = send_telegram_message(chat_id=chat_id, text=f"🔍 Processing '{username}' ({start_year}-{end_year})...")
+        progress_msg = send_telegram_message(
+            chat_id=chat_id,
+            text=f"🔍 Processing '{username}' ({start_year}-{end_year})..."
+        )
 
         executor = ThreadPoolExecutor(max_workers=MAX_WORKERS)
         active_tasks[chat_id] = (executor, [])
 
         try:
-            media_by_year = {year: {'images': [], 'videos': [], 'gifs': []} for year in range(start_year, end_year + 1)}
+            media_by_year = {year: {'images': [], 'videos': [], 'gifs': []} 
+                           for year in range(start_year, end_year + 1)}
             all_post_links = []
             seen_links = set()
             global_seen = {'images': set(), 'videos': set(), 'gifs': set()}
             
             search_links = generate_links(start_year, end_year, username, title_only)
             if not search_links:
-                bot.edit_message_text(chat_id=chat_id, message_id=progress_msg.message_id, text=f"⚠️ No search URLs generated for '{username}'")
+                bot.edit_message_text(
+                    chat_id=chat_id,
+                    message_id=progress_msg.message_id,
+                    text=f"⚠️ No search URLs generated for '{username}'"
+                )
                 return '', 200
 
             for year, search_link in search_links:
                 total_pages = fetch_total_pages(search_link)
                 urls_to_process = split_url(search_link, *re.search(r"c\[newer_than\]=(\d{4}-\d{2}-\d{2})&c\[older_than\]=(\d{4}-\d{2}-\d{2})", search_link).groups()) if total_pages > MAX_PAGES_PER_SEARCH else [search_link]
+                
                 for url in urls_to_process:
                     pages = fetch_total_pages(url)
                     for page in range(1, pages + 1):
                         if chat_id not in active_tasks:
                             raise ScraperError("Task cancelled by user")
                         post_links = scrape_post_links(f"{url}&page={page}")
-                        all_post_links.extend(link for link in post_links if link not in seen_links)
-                        seen_links.update(post_links)
+                        for link in post_links:
+                            if link not in seen_links:
+                                seen_links.add(link)
+                                all_post_links.append(link)
 
             if not all_post_links:
-                bot.edit_message_text(chat_id=chat_id, message_id=progress_msg.message_id, text=f"⚠️ No posts found for '{username}' ({start_year}-{end_year})")
+                bot.edit_message_text(
+                    chat_id=chat_id,
+                    message_id=progress_msg.message_id,
+                    text=f"⚠️ No posts found for '{username}' ({start_year}-{end_year})"
+                )
                 return '', 200
 
-            futures = [executor.submit(process_post, link, username, start_year, end_year, media_by_year, global_seen) for link in all_post_links]
+            futures = [
+                executor.submit(process_post, link, username, start_year, end_year, media_by_year, global_seen)
+                for link in all_post_links
+            ]
             active_tasks[chat_id] = (executor, futures)
 
             processed_count = 0
@@ -402,7 +465,11 @@ def telegram_webhook():
                 future.result()
                 processed_count += 1
                 if processed_count % 10 == 0 or processed_count == total_posts:
-                    bot.edit_message_text(chat_id=chat_id, message_id=progress_msg.message_id, text=f"🔍 Processing '{username}' ({start_year}-{end_year}): {processed_count}/{total_posts} posts")
+                    bot.edit_message_text(
+                        chat_id=chat_id,
+                        message_id=progress_msg.message_id,
+                        text=f"🔍 Processing '{username}' ({start_year}-{end_year}): {processed_count}/{total_posts} posts"
+                    )
 
             bot.delete_message(chat_id=chat_id, message_id=progress_msg.message_id)
             
@@ -413,22 +480,40 @@ def telegram_webhook():
                     html_file = BytesIO(html_content.encode('utf-8'))
                     html_file.name = f"{username.replace(' ', '_')}_{file_type}.html"
                     total_items = sum(len(media_by_year[year][file_type]) for year in media_by_year)
-                    send_telegram_document(chat_id=chat_id, file_buffer=html_file, filename=html_file.name, caption=f"Found {total_items} {file_type} for '{username}' ({start_year}-{end_year})")
+                    
+                    send_telegram_document(
+                        chat_id=chat_id,
+                        file_buffer=html_file,
+                        filename=html_file.name,
+                        caption=f"Found {total_items} {file_type} for '{username}' ({start_year}-{end_year})"
+                    )
                     any_sent = True
 
             if not any_sent:
-                send_telegram_message(chat_id=chat_id, text=f"⚠️ No media found for '{username}' ({start_year}-{end_year})")
+                send_telegram_message(
+                    chat_id=chat_id,
+                    text=f"⚠️ No media found for '{username}' ({start_year}-{end_year})"
+                )
 
         except ScraperError as e:
             if str(e) == "Task cancelled by user":
-                bot.edit_message_text(chat_id=chat_id, message_id=progress_msg.message_id, text=f"🛑 Scraping stopped for '{username}'")
+                bot.edit_message_text(
+                    chat_id=chat_id,
+                    message_id=progress_msg.message_id,
+                    text=f"🛑 Scraping stopped for '{username}'"
+                )
             else:
                 raise
         except Exception as e:
-            bot.edit_message_text(chat_id=chat_id, message_id=progress_msg.message_id, text=f"❌ Error for '{username}': {str(e)}")
+            bot.edit_message_text(
+                chat_id=chat_id,
+                message_id=progress_msg.message_id,
+                text=f"❌ Error for '{username}': {str(e)}"
+            )
             logger.error(f"Error processing {username}: {str(e)}\n{traceback.format_exc()}")
         finally:
             if chat_id in active_tasks:
+                executor, _ = active_tasks[chat_id]
                 del active_tasks[chat_id]
                 executor.shutdown(wait=False)
 
@@ -438,9 +523,17 @@ def telegram_webhook():
         logger.critical(f"Unhandled error: {str(e)}\n{traceback.format_exc()}")
         if 'chat_id' in locals() and 'progress_msg' in locals():
             try:
-                bot.edit_message_text(chat_id=chat_id, message_id=progress_msg.message_id, text=f"❌ Critical error: {str(e)}")
+                bot.edit_message_text(
+                    chat_id=chat_id,
+                    message_id=progress_msg.message_id,
+                    text=f"❌ Critical error: {str(e)}"
+                )
             except:
                 pass
+        if chat_id in active_tasks:
+            executor, _ = active_tasks[chat_id]
+            del active_tasks[chat_id]
+            executor.shutdown(wait=False)
         return '', 200
 
 @app.route('/health', methods=['GET'])
