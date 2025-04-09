@@ -41,7 +41,6 @@ FALLBACK_PROXIES = [
     {"http": "http://43.153.16.91:13001", "https": "http://43.153.16.91:13001"}
 ]
 
-
 BASE_URL = "https://desifakes.com"
 
 class ScraperError(Exception):
@@ -183,35 +182,52 @@ def process_post(post_link, username, start_year, end_year, media_by_date, globa
         filtered_articles = [a for a in articles if a and (username_lower in a.get_text(separator=" ").lower() or username_lower in a.get('data-author', '').lower())]
         
         for article in filtered_articles:
-            for img in article.find_all('img', src=True):
+            # Handle all <img> tags anywhere in the article
+            for img in article.find_all('img', src=True, recursive=True):
                 src = urljoin(BASE_URL, img['src']) if img['src'].startswith("/") else img['src']
                 if (src.startswith("data:image") or "addonflare/awardsystem/icons/" in src or
                     any(keyword in src.lower() for keyword in ["avatars", "ozzmodz_badges_badge", "premium", "likes"])):
                     continue
-                media_type = "gifs" if src.endswith(".gif") else "images"
+                media_type = "gifs" if src.lower().endswith(".gif") else "images"
                 if src not in global_seen[media_type]:
                     global_seen[media_type].add(src)
                     if date not in media_by_date[year][media_type]:
                         media_by_date[year][media_type][date] = []
                     media_by_date[year][media_type][date].append(src)
-            
-            for video in article.find_all('video', src=True):
+                    logger.info(f"Added {media_type[:-1]}: {src}")
+
+            # Handle <a> tags linking to images
+            for link in article.find_all('a', href=True, recursive=True):
+                href = urljoin(BASE_URL, link['href']) if link['href'].startswith("/") else link['href']
+                if any(href.lower().endswith(ext) for ext in ['.png', '.jpg', '.jpeg', '.gif']):
+                    media_type = "gifs" if href.lower().endswith(".gif") else "images"
+                    if href not in global_seen[media_type]:
+                        global_seen[media_type].add(href)
+                        if date not in media_by_date[year][media_type]:
+                            media_by_date[year][media_type][date] = []
+                        media_by_date[year][media_type][date].append(href)
+                        logger.info(f"Added {media_type[:-1]} from link: {href}")
+
+            # Handle videos
+            for video in article.find_all('video', src=True, recursive=True):
                 src = urljoin(BASE_URL, video['src']) if video['src'].startswith("/") else video['src']
                 if src not in global_seen['videos']:
                     global_seen['videos'].add(src)
                     if date not in media_by_date[year]['videos']:
                         media_by_date[year]['videos'][date] = []
                     media_by_date[year]['videos'][date].append(src)
-            
-            for source in article.find_all('source', src=True):
+                    logger.info(f"Added video: {src}")
+
+            for source in article.find_all('source', src=True, recursive=True):
                 src = urljoin(BASE_URL, source['src']) if source['src'].startswith("/") else source['src']
                 if src not in global_seen['videos']:
                     global_seen['videos'].add(src)
                     if date not in media_by_date[year]['videos']:
                         media_by_date[year]['videos'][date] = []
                     media_by_date[year]['videos'][date].append(src)
-            
-            for link in article.find_all('a', href=True):
+                    logger.info(f"Added video from source: {src}")
+
+            for link in article.find_all('a', href=True, recursive=True):
                 href = urljoin(BASE_URL, link['href']) if link['href'].startswith("/") else link['href']
                 if any(href.lower().endswith(ext) for ext in ['.mp4', '.webm', '.mov']):
                     if href not in global_seen['videos']:
@@ -219,6 +235,8 @@ def process_post(post_link, username, start_year, end_year, media_by_date, globa
                         if date not in media_by_date[year]['videos']:
                             media_by_date[year]['videos'][date] = []
                         media_by_date[year]['videos'][date].append(href)
+                        logger.info(f"Added video from link: {href}")
+
     except Exception as e:
         logger.error(f"Failed to process post {post_link}: {str(e)}")
 
