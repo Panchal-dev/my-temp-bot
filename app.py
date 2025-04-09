@@ -11,6 +11,7 @@ from datetime import datetime, timedelta
 import time
 import logging
 import shutil
+import random
 
 # Initialize logging
 logging.basicConfig(
@@ -27,13 +28,22 @@ SAVE_DIR = "HTML_Pages"
 MERGE_DIR = "Merge"
 ERROR_LOG_FILE = os.path.join(MERGE_DIR, "error.txt")
 MAX_RETRIES = 3
-MAX_WORKERS = 6
+MAX_WORKERS = 6  # Total workers split between proxy groups
 
 # Proxy configuration
-PROXY = {
-    "http": "http://34.143.143.61:7777",
-    "https": "http://34.143.143.61:7777"
-}
+PROXY_GROUP_1 = {"http": "http://34.143.143.61:7777", "https": "http://34.143.143.61:7777"}  # 3 workers
+PROXY_GROUP_2 = {"http": "http://45.140.143.77:18080", "https": "http://45.140.143.77:18080"}  # 3 workers
+FALLBACK_PROXIES = [
+    {"http": "http://185.229.241.132:8880", "https": "http://185.229.241.132:8880"},
+    {"http": "http://45.87.68.9:15321", "https": "http://45.87.68.9:15321"},
+    {"http": "http://20.27.14.220:8561", "https": "http://20.27.14.220:8561"},
+    {"http": "http://15.235.9.224:28003", "https": "http://15.235.9.224:28003"},
+    {"http": "http://72.10.160.173:3979", "https": "http://72.10.160.173:3979"},
+    {"http": "http://170.106.150.81:13001", "https": "http://170.106.150.81:13001"},
+    {"http": "http://43.159.144.69:13001", "https": "http://43.159.144.69:13001"},
+    {"http": "http://14.241.80.37:8080", "https": "http://14.241.80.37:8080"},
+    {"http": "http://43.153.16.91:13001", "https": "http://43.153.16.91:13001"}
+]
 
 # Allowed chat IDs (replace with your Telegram chat IDs)
 ALLOWED_CHAT_IDS = {5809601894, 1285451259}
@@ -57,6 +67,22 @@ def close_html(file_path):
 def log_error(url, error_message):
     with open(ERROR_LOG_FILE, "a", encoding="utf-8") as f:
         f.write(f"{url} - {error_message}\n")
+
+# Proxy-enabled request function
+def make_request(url, proxy_group=None, max_retries=MAX_RETRIES):
+    proxies = proxy_group if proxy_group else random.choice(FALLBACK_PROXIES)
+    for attempt in range(max_retries):
+        try:
+            response = requests.get(url, timeout=10, proxies=proxies)
+            response.raise_for_status()
+            logger.info(f"Success with proxy {proxies['http']} on attempt {attempt + 1} for {url}")
+            return response
+        except Exception as e:
+            logger.warning(f"Attempt {attempt + 1} failed with proxy {proxies['http']} for {url}: {str(e)}")
+            if attempt == max_retries - 1:
+                log_error(url, f"Failed after {max_retries} attempts: {str(e)}")
+                raise
+            time.sleep(1 * (attempt + 1))
 
 # Generate search links for a full year
 def generate_year_link(year, username, title_only=False):
@@ -91,33 +117,19 @@ def split_url(url, start_date, end_date, max_pages=10):
         log_error(url, f"Split error: {str(e)}")
         return [url]
 
-# Fetch total pages with retry logic
-def fetch_total_pages(url, max_retries=MAX_RETRIES):
-    for attempt in range(max_retries):
-        try:
-            response = requests.get(url, timeout=10, proxies=PROXY)
-            response.raise_for_status()
-            soup = BeautifulSoup(response.text, 'html.parser')
-            pagination = soup.find('div', class_='pageNav')
-            return max(int(link.text.strip()) for link in pagination.find_all('a') if link.text.strip().isdigit()) if pagination else 1
-        except Exception as e:
-            if attempt == max_retries - 1:
-                log_error(url, str(e))
-                return 1
-            time.sleep(1)
-    return 1
+# Fetch total pages with proxy support
+def fetch_total_pages(url, proxy_group=None):
+    response = make_request(url, proxy_group)
+    soup = BeautifulSoup(response.text, 'html.parser')
+    pagination = soup.find('div', class_='pageNav')
+    return max(int(link.text.strip()) for link in pagination.find_all('a') if link.text.strip().isdigit()) if pagination else 1
 
-# Scrape post links
-def scrape_post_links(search_url):
-    try:
-        response = requests.get(search_url, timeout=10, proxies=PROXY)
-        response.raise_for_status()
-        soup = BeautifulSoup(response.text, 'html.parser')
-        return list(dict.fromkeys(urljoin(BASE_URL, link['href']) for link in soup.find_all('a', href=True) 
-                                 if 'threads/' in link['href'] and not link['href'].startswith('#') and not 'page-' in link['href']))
-    except Exception as e:
-        log_error(search_url, str(e))
-        return []
+# Scrape post links with proxy support
+def scrape_post_links(search_url, proxy_group=None):
+    response = make_request(search_url, proxy_group)
+    soup = BeautifulSoup(response.text, 'html.parser')
+    return list(dict.fromkeys(urljoin(BASE_URL, link['href']) for link in soup.find_all('a', href=True) 
+                             if 'threads/' in link['href'] and not link['href'].startswith('#') and not 'page-' in link['href']))
 
 # Add media without deduplication, preserving site order
 def add_media(media_url, media_type, year):
@@ -132,11 +144,10 @@ def add_media(media_url, media_type, year):
     elif media_type == "gif":
         append_to_html(f"{SAVE_DIR}/{year}/gifs.html", f'<p><a href="{media_url}" target="_blank">View GIF</a></p>')
 
-# Process individual post, preserving site order
-def process_post(post_link, year, username):
+# Process individual post with proxy support
+def process_post(post_link, year, username, proxy_group=None):
     try:
-        response = requests.get(post_link, timeout=10, proxies=PROXY)
-        response.raise_for_status()
+        response = make_request(post_link, proxy_group)
         soup = BeautifulSoup(response.text, 'html.parser')
         post_id = re.search(r'post-(\d+)', post_link).group(1) if re.search(r'post-(\d+)', post_link) else None
         articles = [soup.find('article', {'data-content': f'post-{post_id}', 'id': f'js-post-{post_id}'})] if post_id else soup.find_all('article')
@@ -145,7 +156,6 @@ def process_post(post_link, year, username):
         articles = [a for a in articles if a and (username_lower in a.get_text(separator=" ").lower() or username_lower in a.get('data-author', '').lower())]
         
         for article in articles:
-            # Process media in the order it appears in the HTML
             for media in article.find_all(['img', 'video', 'source', 'a'], recursive=True):
                 if media.name == 'img' and media.get('src'):
                     src = media['src']
@@ -164,32 +174,38 @@ def process_post(post_link, year, username):
     except Exception as e:
         log_error(post_link, str(e))
 
-# Process year
+# Process year with proxy groups
 def process_year(year, search_url, username, chat_id):
     year_dir = f"{SAVE_DIR}/{year}"
     os.makedirs(year_dir, exist_ok=True)
     for file_type in ["images", "videos", "gifs"]:
         init_html(f"{year_dir}/{file_type}.html", f"{year} {file_type.capitalize()} Links")
     
-    total_pages = fetch_total_pages(search_url)
+    total_pages = fetch_total_pages(search_url, PROXY_GROUP_1)  # Use GROUP_1 for initial fetch
     urls_to_process = split_url(search_url, f"{year}-01-01", f"{year}-12-31") if total_pages >= 10 else [search_url]
     
-    executor = ThreadPoolExecutor(max_workers=MAX_WORKERS)
+    # Split workers: 3 for GROUP_1, 3 for GROUP_2
+    executor1 = ThreadPoolExecutor(max_workers=3)  # For PROXY_GROUP_1
+    executor2 = ThreadPoolExecutor(max_workers=3)  # For PROXY_GROUP_2
     futures = []
     total_posts = 0
     
     for url in urls_to_process:
-        total_pages = fetch_total_pages(url)
-        for page in range(total_pages, 0, -1):  # Reverse order for Dec 31 to Jan 1
-            post_links = scrape_post_links(f"{url}&page={page}")
+        total_pages = fetch_total_pages(url, PROXY_GROUP_1)
+        for page in range(total_pages, 0, -1):
+            post_links = scrape_post_links(f"{url}&page={page}", PROXY_GROUP_1)
             total_posts += len(post_links)
-            for post in post_links:
-                future = executor.submit(process_post, post, year, username)
+            mid = len(post_links) // 2
+            # Split posts between proxy groups
+            for post in post_links[:mid]:
+                future = executor1.submit(process_post, post, year, username, PROXY_GROUP_1)
+                futures.append(future)
+            for post in post_links[mid:]:
+                future = executor2.submit(process_post, post, year, username, PROXY_GROUP_2)
                 futures.append(future)
     
-    # Preserve progress_msg_id from active_tasks
     _, _, progress_msg_id = active_tasks[chat_id]
-    active_tasks[chat_id] = (executor, futures, progress_msg_id)
+    active_tasks[chat_id] = ((executor1, executor2), futures, progress_msg_id)
     
     processed_count = 0
     for future in as_completed(futures):
@@ -268,10 +284,11 @@ def send_telegram_document(chat_id, file_buffer, filename, caption):
 
 def cancel_task(chat_id):
     if chat_id in active_tasks:
-        executor, futures, _ = active_tasks[chat_id]
+        (executor1, executor2), futures, _ = active_tasks[chat_id]
         for future in futures:
             future.cancel()
-        executor.shutdown(wait=False)
+        executor1.shutdown(wait=False)
+        executor2.shutdown(wait=False)
         del active_tasks[chat_id]
         return True
     return False
@@ -344,7 +361,6 @@ def telegram_webhook():
                     with open(final_file_path, 'rb') as f:
                         html_file = BytesIO(f.read())
                         html_file.name = f"{username.replace(' ', '_')}_{file_type}.html"
-                        # Reopen to count items
                         with open(final_file_path, 'r', encoding='utf-8') as f2:
                             total_items = len(BeautifulSoup(f2.read(), 'html.parser').body.find_all(recursive=False))
                         send_telegram_document(chat_id, html_file, html_file.name, 
@@ -361,9 +377,11 @@ def telegram_webhook():
             logger.error(f"Error processing {username}: {str(e)}")
         finally:
             if chat_id in active_tasks:
-                executor, _, _ = active_tasks[chat_id]
-                if executor:
-                    executor.shutdown(wait=False)
+                (executor1, executor2), _, _ = active_tasks[chat_id]
+                if executor1:
+                    executor1.shutdown(wait=False)
+                if executor2:
+                    executor2.shutdown(wait=False)
                 del active_tasks[chat_id]
             shutil.rmtree(SAVE_DIR, ignore_errors=True)
 
@@ -377,9 +395,11 @@ def telegram_webhook():
             except:
                 pass
         if chat_id in active_tasks:
-            executor, _, _ = active_tasks[chat_id]
-            if executor:
-                executor.shutdown(wait=False)
+            (executor1, executor2), _, _ = active_tasks[chat_id]
+            if executor1:
+                executor1.shutdown(wait=False)
+            if executor2:
+                executor2.shutdown(wait=False)
             del active_tasks[chat_id]
         return '', 200
 
