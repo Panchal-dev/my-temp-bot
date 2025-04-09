@@ -187,7 +187,9 @@ def process_year(year, search_url, username, chat_id):
                 future = executor.submit(process_post, post, year, username)
                 futures.append(future)
     
-    active_tasks[chat_id] = (executor, futures)
+    # Preserve progress_msg_id from active_tasks
+    _, _, progress_msg_id = active_tasks[chat_id]
+    active_tasks[chat_id] = (executor, futures, progress_msg_id)
     
     processed_count = 0
     for future in as_completed(futures):
@@ -196,7 +198,7 @@ def process_year(year, search_url, username, chat_id):
         future.result()
         processed_count += 1
         if processed_count % 10 == 0 or processed_count == total_posts:
-            bot.edit_message_text(chat_id=chat_id, message_id=active_tasks[chat_id][2], 
+            bot.edit_message_text(chat_id=chat_id, message_id=progress_msg_id, 
                                  text=f"🔍 Processing '{username}' ({year}): {processed_count}/{total_posts} posts")
     
     for file_type in ["images", "videos", "gifs"]:
@@ -342,7 +344,9 @@ def telegram_webhook():
                     with open(final_file_path, 'rb') as f:
                         html_file = BytesIO(f.read())
                         html_file.name = f"{username.replace(' ', '_')}_{file_type}.html"
-                        total_items = len(BeautifulSoup(f.read(), 'html.parser').body.find_all(recursive=False))
+                        # Reopen to count items
+                        with open(final_file_path, 'r', encoding='utf-8') as f2:
+                            total_items = len(BeautifulSoup(f2.read(), 'html.parser').body.find_all(recursive=False))
                         send_telegram_document(chat_id, html_file, html_file.name, 
                                               f"Found {total_items} {file_type} for '{username}' ({start_year}-{end_year})")
                     any_sent = True
