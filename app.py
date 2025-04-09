@@ -139,6 +139,7 @@ def fetch_page_data(url, page=None, proxy_group=None):
         full_url = f"{url}&page={page}" if page else url
         response = make_request(full_url, proxy_group=proxy_group)
         soup = BeautifulSoup(response.text, 'html.parser')
+        # Match manual script’s link extraction
         links = list(dict.fromkeys(urljoin(BASE_URL, link['href']) for link in soup.find_all('a', href=True) 
                                   if 'threads/' in link['href'] and not link['href'].startswith('#') and 'page-' not in link['href']))
         pagination = soup.find('div', class_='pageNav')
@@ -181,43 +182,33 @@ def process_post(post_link, username, start_year, end_year, media_by_date, globa
         post_id = re.search(r'post-(\d+)', post_link)
         articles = [soup.find('article', {'data-content': f'post-{post_id.group(1)}', 'id': f'js-post-{post_id.group(1)}'})] if post_id else soup.find_all('article')
         
-        # Filter articles by username in text or author (case-insensitive)
+        # Filter articles by username in text or author (case-insensitive), same as manual
         username_lower = username.lower()
         filtered_articles = [a for a in articles if a and (username_lower in a.get_text(separator=" ").lower() or username_lower in a.get('data-author', '').lower())]
         
         for article in filtered_articles:
-            # Process all media tags in order (img, video, source)
+            # Process media in the order it appears in the HTML, matching manual script
             for media in article.find_all(['img', 'video', 'source'], src=True):
                 src = media['src']
                 src = urljoin(BASE_URL, src) if src.startswith("/") else src
                 
-                # Skip unwanted media
+                # Skip unwanted media, identical to manual script
                 if (src.startswith("data:image") or "addonflare/awardsystem/icons/" in src or
                     any(keyword in src.lower() for keyword in ["avatars", "ozzmodz_badges_badge", "premium", "likes"])):
                     continue
                 
-                # Determine media type
+                # Determine media type, matching manual script
                 if media.name == 'img':
                     media_type = "gifs" if src.endswith(".gif") else "images"
                 elif media.name in ['video', 'source']:
                     media_type = "videos"
                 
-                # Add to media_by_date if not seen globally
+                # Add to media_by_date if not seen globally, matching manual deduplication
                 if src not in global_seen[media_type]:
                     global_seen[media_type].add(src)
                     if date not in media_by_date[year][media_type]:
                         media_by_date[year][media_type][date] = []
                     media_by_date[year][media_type][date].append(src)
-            
-            # Process <a> tags for additional video links (e.g., .mp4, .webm)
-            for link in article.find_all('a', href=True):
-                href = urljoin(BASE_URL, link['href']) if link['href'].startswith("/") else link['href']
-                if any(href.lower().endswith(ext) for ext in ['.mp4', '.webm', '.mov']):
-                    if href not in global_seen['videos']:
-                        global_seen['videos'].add(href)
-                        if date not in media_by_date[year]['videos']:
-                            media_by_date[year]['videos'][date] = []
-                        media_by_date[year]['videos'][date].append(href)
     except Exception as e:
         logger.error(f"Failed to process post {post_link}: {str(e)}")
 
