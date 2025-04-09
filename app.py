@@ -23,7 +23,7 @@ app = Flask(__name__)
 
 # Configuration
 MAX_RETRIES = 3
-MAX_WORKERS = 6
+MAX_WORKERS = 4
 MAX_PAGES_PER_SEARCH = 10
 
 # Proxy configuration (using manual script's proxy for consistency)
