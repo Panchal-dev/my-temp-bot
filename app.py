@@ -58,7 +58,7 @@ def make_request(url, method='get', proxy_group=None, **kwargs):
     proxies = [proxy_group] + FALLBACK_PROXIES if proxy_group else FALLBACK_PROXIES
 
     for proxy_idx, proxy in enumerate(proxies):
-        logger.info(f"Trying proxy {proxy_idx + 1}: {proxy['https']}")
+        logger.info(f"Trying proxy {proxy_idx + 1}: {proxy['https']} for {url}")
         for attempt in range(MAX_RETRIES):
             current_timeout = initial_timeout + (attempt * timeout_increment)
             try:
@@ -153,6 +153,7 @@ def process_post(post_link, username, start_year, end_year, media_by_date, globa
         response = make_request(post_link, proxy_group=proxy_group)
         soup = BeautifulSoup(response.text, 'html.parser')
         
+        # Extract date
         date = None
         date_elem = soup.find('time', class_='u-dt')
         if date_elem and 'datetime' in date_elem.attrs:
@@ -174,19 +175,28 @@ def process_post(post_link, username, start_year, end_year, media_by_date, globa
             date = f"{year}-01-01"
         
         if year < start_year or year > end_year:
+            logger.info(f"Skipping post {post_link} - Date {year} outside range {start_year}-{end_year}")
             return
         
-        post_id = re.search(r'post-(\d+)', post_link)
-        articles = [soup.find('article', {'data-content': f'post-{post_id.group(1)}', 'id': f'js-post-{post_id.group(1)}'})] if post_id else soup.find_all('article')
+        # Get all articles and filter by username presence
+        articles = soup.find_all('article')
         username_lower = username.lower()
-        filtered_articles = [a for a in articles if a and (username_lower in a.get_text(separator=" ").lower() or username_lower in a.get('data-author', '').lower())]
+        filtered_articles = [a for a in articles if a and username_lower in a.get_text(separator=" ").lower()]
+        if not filtered_articles:
+            logger.info(f"No relevant articles found in {post_link} for username '{username}'")
+            return
+        
+        logger.info(f"Found {len(filtered_articles)} relevant articles in {post_link}")
+        
+        # Supported media extensions
+        image_extensions = ['.png', '.jpg', '.jpeg', '.gif']
+        video_extensions = ['.mp4', '.webm', '.mov']
         
         for article in filtered_articles:
-            # Handle all <img> tags anywhere in the article
+            # Extract images from <img> tags
             for img in article.find_all('img', src=True, recursive=True):
                 src = urljoin(BASE_URL, img['src']) if img['src'].startswith("/") else img['src']
-                if (src.startswith("data:image") or "addonflare/awardsystem/icons/" in src or
-                    any(keyword in src.lower() for keyword in ["avatars", "ozzmodz_badges_badge", "premium", "likes"])):
+                if src.startswith("data:image") or "addonflare/awardsystem/icons/" in src:
                     continue
                 media_type = "gifs" if src.lower().endswith(".gif") else "images"
                 if src not in global_seen[media_type]:
@@ -194,21 +204,29 @@ def process_post(post_link, username, start_year, end_year, media_by_date, globa
                     if date not in media_by_date[year][media_type]:
                         media_by_date[year][media_type][date] = []
                     media_by_date[year][media_type][date].append(src)
-                    logger.info(f"Added {media_type[:-1]}: {src}")
-
-            # Handle <a> tags linking to images
+                    logger.info(f"Added {media_type[:-1]} from <img>: {src}")
+            
+            # Extract images and videos from <a> tags
             for link in article.find_all('a', href=True, recursive=True):
                 href = urljoin(BASE_URL, link['href']) if link['href'].startswith("/") else link['href']
-                if any(href.lower().endswith(ext) for ext in ['.png', '.jpg', '.jpeg', '.gif']):
-                    media_type = "gifs" if href.lower().endswith(".gif") else "images"
+                href_lower = href.lower()
+                if any(href_lower.endswith(ext) for ext in image_extensions):
+                    media_type = "gifs" if href_lower.endswith(".gif") else "images"
                     if href not in global_seen[media_type]:
                         global_seen[media_type].add(href)
                         if date not in media_by_date[year][media_type]:
                             media_by_date[year][media_type][date] = []
                         media_by_date[year][media_type][date].append(href)
-                        logger.info(f"Added {media_type[:-1]} from link: {href}")
-
-            # Handle videos
+                        logger.info(f"Added {media_type[:-1]} from <a>: {href}")
+                elif any(href_lower.endswith(ext) for ext in video_extensions):
+                    if href not in global_seen['videos']:
+                        global_seen['videos'].add(href)
+                        if date not in media_by_date[year]['videos']:
+                            media_by_date[year]['videos'][date] = []
+                        media_by_date[year]['videos'][date].append(href)
+                        logger.info(f"Added video from <a>: {href}")
+            
+            # Extract videos from <video> and <source> tags
             for video in article.find_all('video', src=True, recursive=True):
                 src = urljoin(BASE_URL, video['src']) if video['src'].startswith("/") else video['src']
                 if src not in global_seen['videos']:
@@ -216,8 +234,8 @@ def process_post(post_link, username, start_year, end_year, media_by_date, globa
                     if date not in media_by_date[year]['videos']:
                         media_by_date[year]['videos'][date] = []
                     media_by_date[year]['videos'][date].append(src)
-                    logger.info(f"Added video: {src}")
-
+                    logger.info(f"Added video from <video>: {src}")
+            
             for source in article.find_all('source', src=True, recursive=True):
                 src = urljoin(BASE_URL, source['src']) if source['src'].startswith("/") else source['src']
                 if src not in global_seen['videos']:
@@ -225,18 +243,8 @@ def process_post(post_link, username, start_year, end_year, media_by_date, globa
                     if date not in media_by_date[year]['videos']:
                         media_by_date[year]['videos'][date] = []
                     media_by_date[year]['videos'][date].append(src)
-                    logger.info(f"Added video from source: {src}")
-
-            for link in article.find_all('a', href=True, recursive=True):
-                href = urljoin(BASE_URL, link['href']) if link['href'].startswith("/") else link['href']
-                if any(href.lower().endswith(ext) for ext in ['.mp4', '.webm', '.mov']):
-                    if href not in global_seen['videos']:
-                        global_seen['videos'].add(href)
-                        if date not in media_by_date[year]['videos']:
-                            media_by_date[year]['videos'][date] = []
-                        media_by_date[year]['videos'][date].append(href)
-                        logger.info(f"Added video from link: {href}")
-
+                    logger.info(f"Added video from <source>: {src}")
+            
     except Exception as e:
         logger.error(f"Failed to process post {post_link}: {str(e)}")
 
