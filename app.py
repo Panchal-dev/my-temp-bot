@@ -14,7 +14,7 @@ import time
 
 # Initialize logging
 logging.basicConfig(
-    level=logging.INFO,
+    level=logging.DEBUG,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger(__name__)
@@ -163,7 +163,7 @@ def process_post(post_link, username, start_year, end_year, media_by_date, globa
                 date = post_date.strftime("%Y-%m-%d")
                 year = post_date.year
             except ValueError:
-                pass
+                logger.warning(f"Could not parse datetime for {post_link}: {date_elem['datetime']}")
         
         if not date and date_elem:
             match = re.search(r'(\d{4})-(\d{2})-(\d{2})', date_elem.get_text(strip=True))
@@ -174,22 +174,31 @@ def process_post(post_link, username, start_year, end_year, media_by_date, globa
         if not date:
             year = start_year
             date = f"{year}-01-01"
+            logger.info(f"No date found for {post_link}, defaulting to {date}")
         
         if year < start_year or year > end_year:
+            logger.info(f"Post {post_link} year {year} outside range {start_year}-{end_year}, skipping")
             return
         
-        # Get articles (preserve order, less strict filtering)
+        # Get articles
         post_id = re.search(r'post-(\d+)', post_link)
         articles = [soup.find('article', {'data-content': f'post-{post_id.group(1)}', 'id': f'js-post-{post_id.group(1)}'})] if post_id else soup.find_all('article')
+        if not articles:
+            logger.warning(f"No articles found in {post_link}")
+            return
+        
         username_lower = username.lower()
-        # Relaxed filtering: include article if username is in text, author, or not specified (to avoid missing content)
+        # Relaxed filtering: include all articles if username is empty or matches text/author
         filtered_articles = [a for a in articles if a and (
             not username or username_lower in a.get_text(separator=" ").lower() or 
             username_lower in a.get('data-author', '').lower()
         )]
+        if not filtered_articles:
+            logger.info(f"No articles matched username '{username}' in {post_link}")
+            return
         
         for article in filtered_articles:
-            # Process all media tags in order of appearance
+            # Process all media tags in order
             for media in article.find_all(['img', 'video', 'source', 'a'], recursive=True):
                 src = None
                 media_type = None
@@ -197,6 +206,11 @@ def process_post(post_link, username, start_year, end_year, media_by_date, globa
                 if media.name == 'img' and media.get('src'):
                     src = urljoin(BASE_URL, media['src']) if media['src'].startswith("/") else media['src']
                     media_type = "gifs" if src.endswith(".gif") else "images"
+                    # Check for watermarked images with data-url
+                    if media.get('data-url'):
+                        watermark_src = media['data-url']
+                        src = watermark_src if watermark_src else src
+                        logger.debug(f"Found watermark image in {post_link}: {src}")
                 
                 elif media.name == 'video' and media.get('src'):
                     src = urljoin(BASE_URL, media['src']) if media['src'].startswith("/") else media['src']
@@ -208,15 +222,17 @@ def process_post(post_link, username, start_year, end_year, media_by_date, globa
                 
                 elif media.name == 'a' and media.get('href'):
                     href = urljoin(BASE_URL, media['href']) if media['href'].startswith("/") else media['href']
-                    # Check if the link points to an image or video
+                    # Handle external media links
                     if any(href.lower().endswith(ext) for ext in ['.jpg', '.jpeg', '.png', '.gif', '.mp4', '.webm', '.mov']):
                         src = href
                         media_type = "gifs" if href.endswith('.gif') else "images" if href.endswith(('.jpg', '.jpeg', '.png')) else "videos"
+                        logger.debug(f"Found external link in {post_link}: {src}")
                 
                 if src and media_type:
                     # Skip unwanted content
                     if (src.startswith("data:image") or "addonflare/awardsystem/icons/" in src or
                         any(keyword in src.lower() for keyword in ["avatars", "ozzmodz_badges_badge", "premium", "likes"])):
+                        logger.debug(f"Skipping unwanted media in {post_link}: {src}")
                         continue
                     
                     # Add to media_by_date if not already seen
@@ -225,7 +241,10 @@ def process_post(post_link, username, start_year, end_year, media_by_date, globa
                         if date not in media_by_date[year][media_type]:
                             media_by_date[year][media_type][date] = []
                         media_by_date[year][media_type][date].append(src)
-            
+                        logger.debug(f"Added {media_type} from {post_link}: {src}")
+                    else:
+                        logger.debug(f"Duplicate {media_type} skipped in {post_link}: {src}")
+                
     except Exception as e:
         logger.error(f"Failed to process post {post_link}: {str(e)}")
 
