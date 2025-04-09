@@ -9,13 +9,13 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from io import BytesIO
 import telebot
 from datetime import datetime, timedelta
+import traceback
 import time
 
-# Initialize logging with DEBUG level
+# Initialize logging
 logging.basicConfig(
-    level=logging.DEBUG,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    handlers=[logging.StreamHandler()]
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger(__name__)
 
@@ -23,11 +23,25 @@ app = Flask(__name__)
 
 # Configuration
 MAX_RETRIES = 3
-MAX_WORKERS = 4
-MAX_PAGES_PER_SEARCH = 10
+MAX_WORKERS = 6  # Total workers
+MAX_PAGES_PER_SEARCH = 10  # Threshold for splitting
 
-# Proxy configuration (using manual script's proxy for consistency)
-PROXY = {"http": "http://34.143.143.61:7777", "https": "http://34.143.143.61:7777"}
+# Proxy configuration
+PROXY_GROUP_1 = {"http": "http://34.143.143.61:7777", "https": "http://34.143.143.61:7777"}  # 3 workers
+PROXY_GROUP_2 = {"http": "http://45.140.143.77:18080", "https": "http://45.140.143.77:18080"}  # 3 workers
+FALLBACK_PROXIES = [
+    {"http": "http://185.229.241.132:8880", "https": "http://185.229.241.132:8880"},
+    {"http": "http://45.87.68.9:15321", "https": "http://45.87.68.9:15321"},
+    {"http": "http://20.27.14.220:8561", "https": "http://20.27.14.220:8561"},
+    {"http": "http://15.235.9.224:28003", "https": "http://15.235.9.224:28003"},
+    {"http": "http://72.10.160.173:3979", "https": "http://72.10.160.173:3979"},
+    {"http": "http://170.106.150.81:13001", "https": "http://170.106.150.81:13001"},
+    {"http": "http://43.159.144.69:13001", "https": "http://43.159.144.69:13001"},
+    {"http": "http://14.241.80.37:8080", "https": "http://14.241.80.37:8080"},
+    {"http": "http://43.153.16.91:13001", "https": "http://43.153.16.91:13001"}
+]
+
+
 BASE_URL = "https://desifakes.com"
 
 class ScraperError(Exception):
@@ -39,27 +53,37 @@ active_tasks = {}
 # Allowed chat IDs
 ALLOWED_CHAT_IDS = {5809601894, 1285451259}
 
-def make_request(url, method='get', proxies=PROXY):
+def make_request(url, method='get', proxy_group=None, **kwargs):
     initial_timeout = 11
     timeout_increment = 5
-    for attempt in range(MAX_RETRIES):
-        current_timeout = initial_timeout + (attempt * timeout_increment)
-        try:
-            response = requests.request(
-                method,
-                url,
-                proxies=proxies,
-                timeout=current_timeout,
-                headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
-            )
-            response.raise_for_status()
-            logger.info(f"Success on attempt {attempt + 1} for {url}")
-            return response
-        except requests.exceptions.RequestException as e:
-            logger.warning(f"Attempt {attempt + 1} failed for {url}: {str(e)}")
-            if attempt == MAX_RETRIES - 1:
-                raise ScraperError(f"Failed for {url} after {MAX_RETRIES} attempts: {str(e)}")
-            time.sleep(1 * (attempt + 1))
+    proxies = [proxy_group] + FALLBACK_PROXIES if proxy_group else FALLBACK_PROXIES
+
+    for proxy_idx, proxy in enumerate(proxies):
+        logger.info(f"Trying proxy {proxy_idx + 1}: {proxy['https']}")
+        for attempt in range(MAX_RETRIES):
+            current_timeout = initial_timeout + (attempt * timeout_increment)
+            try:
+                response = requests.request(
+                    method,
+                    url,
+                    proxies=proxy,
+                    timeout=current_timeout,
+                    **kwargs
+                )
+                response.raise_for_status()
+                logger.info(f"Success with proxy {proxy_idx + 1} on attempt {attempt + 1} for {url}")
+                return response
+            except requests.exceptions.RequestException as e:
+                logger.warning(f"Attempt {attempt + 1} failed for {url} with proxy {proxy_idx + 1}: {str(e)}")
+                if '503 Service Unavailable' in str(e):
+                    logger.warning(f"503 detected, waiting 10 seconds before retry")
+                    time.sleep(10)
+                if attempt == MAX_RETRIES - 1 and proxy_idx == len(proxies) - 1:
+                    raise ScraperError(f"All proxies failed for {url} after {MAX_RETRIES} attempts: {str(e)}")
+                elif attempt == MAX_RETRIES - 1:
+                    logger.info(f"Switching to next proxy {proxy_idx + 2}")
+                    break
+                time.sleep(1 * (attempt + 1))
 
 def generate_links(start_year, end_year, username, title_only=False):
     if not username or not isinstance(username, str):
@@ -71,9 +95,9 @@ def generate_links(start_year, end_year, username, title_only=False):
     end_year = min(current_year, max(end_year, start_year))
     
     links = []
-    for year in range(end_year, start_year - 1, -1):
+    for year in range(end_year, start_year - 1, -1):  # Descending order
         start_date = f"{year}-01-01"
-        end_date = f"{year}-12-31" if year < current_year else current_date.strftime("%Y-%m-%d")
+        end_date = f"{year}-12-31" if year < current_year or current_date.strftime("%Y-%m-%d") > f"{year}-12-31" else current_date.strftime("%Y-%m-%d")
         url = (
             f"{BASE_URL}/search/39143295/?q={username.replace(' ', '+')}"
             f"&c[newer_than]={start_date}"
@@ -89,7 +113,7 @@ def split_url(url, start_date, end_date, max_pages=MAX_PAGES_PER_SEARCH):
     try:
         start_dt = datetime.strptime(start_date, "%Y-%m-%d")
         end_dt = datetime.strptime(end_date, "%Y-%m-%d")
-        response = make_request(url)
+        response = make_request(url, proxy_group=PROXY_GROUP_1)
         soup = BeautifulSoup(response.text, 'html.parser')
         pagination = soup.find('div', class_='pageNav')
         total_pages = max([int(link.text.strip()) for link in pagination.find_all('a') if link.text.strip().isdigit()]) if pagination else 1
@@ -111,10 +135,10 @@ def split_url(url, start_date, end_date, max_pages=MAX_PAGES_PER_SEARCH):
         logger.error(f"Split error for {url}: {str(e)}")
         return [(url, start_date, end_date)]
 
-def fetch_page_data(url, page=None):
+def fetch_page_data(url, page=None, proxy_group=None):
     try:
         full_url = f"{url}&page={page}" if page else url
-        response = make_request(full_url)
+        response = make_request(full_url, proxy_group=proxy_group)
         soup = BeautifulSoup(response.text, 'html.parser')
         links = list(dict.fromkeys(urljoin(BASE_URL, link['href']) for link in soup.find_all('a', href=True) 
                                   if 'threads/' in link['href'] and not link['href'].startswith('#') and 'page-' not in link['href']))
@@ -125,55 +149,98 @@ def fetch_page_data(url, page=None):
         logger.error(f"Failed to fetch page data for {full_url}: {str(e)}")
         return [], 1
 
-def process_post(post_link, username, start_year, end_year, media_by_date, global_seen):
+def process_post(post_link, username, start_year, end_year, media_by_date, global_seen, proxy_group=None):
     try:
-        response = make_request(post_link)
+        response = make_request(post_link, proxy_group=proxy_group)
         soup = BeautifulSoup(response.text, 'html.parser')
-        logger.debug(f"Raw HTML for {post_link}:\n{response.text[:1000]}...")
         
         # Extract date
+        date = None
         date_elem = soup.find('time', class_='u-dt')
         if date_elem and 'datetime' in date_elem.attrs:
-            post_date = datetime.strptime(date_elem['datetime'], "%Y-%m-%dT%H:%M:%S%z")
-            date = post_date.strftime("%Y-%m-%d")
-            year = post_date.year
-        else:
+            try:
+                post_date = datetime.strptime(date_elem['datetime'], "%Y-%m-%dT%H:%M:%S%z")
+                date = post_date.strftime("%Y-%m-%d")
+                year = post_date.year
+            except ValueError:
+                pass
+        
+        if not date and date_elem:
+            match = re.search(r'(\d{4})-(\d{2})-(\d{2})', date_elem.get_text(strip=True))
+            if match:
+                date = f"{match.group(1)}-{match.group(2)}-{match.group(3)}"
+                year = int(match.group(1))
+        
+        if not date:
             year = start_year
             date = f"{year}-01-01"
         
         if year < start_year or year > end_year:
             return
         
+        # Get articles (preserve order, less strict filtering)
         post_id = re.search(r'post-(\d+)', post_link)
         articles = [soup.find('article', {'data-content': f'post-{post_id.group(1)}', 'id': f'js-post-{post_id.group(1)}'})] if post_id else soup.find_all('article')
         username_lower = username.lower()
-        filtered_articles = [a for a in articles if a and (username_lower in a.get_text(separator=" ").lower() or username_lower in a.get('data-author', '').lower())]
+        # Relaxed filtering: include article if username is in text, author, or not specified (to avoid missing content)
+        filtered_articles = [a for a in articles if a and (
+            not username or username_lower in a.get_text(separator=" ").lower() or 
+            username_lower in a.get('data-author', '').lower()
+        )]
         
-        logger.info(f"Found {len(filtered_articles)} matching articles in {post_link}")
         for article in filtered_articles:
-            logger.debug(f"Article content in {post_link}:\n{str(article)[:500]}...")
-            for media in article.find_all(['img', 'video', 'source'], src=True):
-                src = urljoin(BASE_URL, media['src']) if media['src'].startswith("/") else media['src']
-                if (src.startswith("data:image") or "addonflare/awardsystem/icons/" in src or
-                    any(keyword in src.lower() for keyword in ["avatars", "ozzmodz_badges_badge", "premium", "likes"])):
-                    continue
+            # Process all media tags in order of appearance
+            for media in article.find_all(['img', 'video', 'source', 'a'], recursive=True):
+                src = None
+                media_type = None
                 
-                media_type = "videos" if media.name in ['video', 'source'] else ("gifs" if src.endswith(".gif") else "images")
-                if src not in global_seen[media_type]:
-                    global_seen[media_type].add(src)
-                    if date not in media_by_date[year][media_type]:
-                        media_by_date[year][media_type][date] = []
-                    media_by_date[year][media_type][date].append(src)
-                    logger.info(f"Added {media_type} from {post_link}: {src}")
+                if media.name == 'img' and media.get('src'):
+                    src = urljoin(BASE_URL, media['src']) if media['src'].startswith("/") else media['src']
+                    media_type = "gifs" if src.endswith(".gif") else "images"
+                
+                elif media.name == 'video' and media.get('src'):
+                    src = urljoin(BASE_URL, media['src']) if media['src'].startswith("/") else media['src']
+                    media_type = "videos"
+                
+                elif media.name == 'source' and media.get('src'):
+                    src = urljoin(BASE_URL, media['src']) if media['src'].startswith("/") else media['src']
+                    media_type = "videos"
+                
+                elif media.name == 'a' and media.get('href'):
+                    href = urljoin(BASE_URL, media['href']) if media['href'].startswith("/") else media['href']
+                    # Check if the link points to an image or video
+                    if any(href.lower().endswith(ext) for ext in ['.jpg', '.jpeg', '.png', '.gif', '.mp4', '.webm', '.mov']):
+                        src = href
+                        media_type = "gifs" if href.endswith('.gif') else "images" if href.endswith(('.jpg', '.jpeg', '.png')) else "videos"
+                
+                if src and media_type:
+                    # Skip unwanted content
+                    if (src.startswith("data:image") or "addonflare/awardsystem/icons/" in src or
+                        any(keyword in src.lower() for keyword in ["avatars", "ozzmodz_badges_badge", "premium", "likes"])):
+                        continue
+                    
+                    # Add to media_by_date if not already seen
+                    if src not in global_seen[media_type]:
+                        global_seen[media_type].add(src)
+                        if date not in media_by_date[year][media_type]:
+                            media_by_date[year][media_type][date] = []
+                        media_by_date[year][media_type][date].append(src)
+            
     except Exception as e:
-        logger.error(f"Failed to process {post_link}: {str(e)}")
+        logger.error(f"Failed to process post {post_link}: {str(e)}")
 
 def create_html(file_type, media_by_date, username, start_year, end_year):
     html_content = f"""<!DOCTYPE html><html><head>
-    <title>{username} - {file_type.capitalize()}</title>
+    <title>{username} - {file_type.capitalize()} Links</title>
     <meta charset="UTF-8">
-    <style>body {{ font-family: Arial, sans-serif; margin: 20px; }} img {{ max-width: 80%; height: auto; }} video {{ max-width: 100%; }}</style>
-    </head><body><h1>{username} - {file_type.capitalize()} ({start_year}-{end_year})</h1>"""
+    <style>
+        body {{ font-family: Arial, sans-serif; margin: 20px; }}
+        img {{ max-width: 80%; height: auto; }}
+        video {{ max-width: 100%; }}
+    </style>
+    </head>
+    <body>
+    <h1>{username} - {file_type.capitalize()} Links ({start_year}-{end_year})</h1>"""
     
     total_items = 0
     for year in sorted(media_by_date.keys(), reverse=True):
@@ -202,18 +269,18 @@ def send_telegram_message(chat_id, text, **kwargs):
             logger.warning(f"Send message attempt {attempt + 1} failed: {str(e)}")
             if attempt == MAX_RETRIES - 1:
                 raise
-            time.sleep(1)
+            time.sleep(1 * (attempt + 1))
 
 def send_telegram_document(chat_id, file_buffer, filename, caption):
     for attempt in range(MAX_RETRIES):
         try:
             file_buffer.seek(0)
-            return bot.send_document(chat_id=chat_id, document=file_buffer, filename=filename, caption=caption[:1024])
+            return bot.send_document(chat_id=chat_id, document=file_buffer, visible_file_name=filename, caption=caption[:1024])
         except Exception as e:
             logger.warning(f"Send document attempt {attempt + 1} failed: {str(e)}")
             if attempt == MAX_RETRIES - 1:
                 raise
-            time.sleep(1)
+            time.sleep(1 * (attempt + 1))
 
 def cancel_task(chat_id):
     if chat_id in active_tasks:
@@ -253,7 +320,7 @@ def telegram_webhook():
 
         parts = text.split()
         if len(parts) < 1 or (parts[0] == '/start' and len(parts) < 2):
-            send_telegram_message(chat_id=chat_id, text="Usage: username [title_only y/n] [start_year] [end_year]\nExample: 'Rakul Preet Singh' y 2025 2025", reply_to_message_id=message_id)
+            send_telegram_message(chat_id=chat_id, text="Usage: username [title_only y/n] [start_year] [end_year]\nExample: 'Akshra Singh' n 2023 2025", reply_to_message_id=message_id)
             return '', 200
 
         if chat_id in active_tasks:
@@ -273,6 +340,7 @@ def telegram_webhook():
 
         progress_msg = send_telegram_message(chat_id=chat_id, text=f"🔍 Processing '{username}' ({start_year}-{end_year})...")
 
+        # Split workers: 3 for PROXY_GROUP_1, 3 for PROXY_GROUP_2
         executor = ThreadPoolExecutor(max_workers=MAX_WORKERS)
         active_tasks[chat_id] = (executor, [])
 
@@ -287,13 +355,25 @@ def telegram_webhook():
                 bot.edit_message_text(chat_id=chat_id, message_id=progress_msg.message_id, text=f"⚠️ No search URLs for '{username}'")
                 return '', 200
 
+            # Split links between two proxy groups
+            mid_point = len(search_links) // 2
+            group1_links = search_links[:mid_point]
+            group2_links = search_links[mid_point:]
+
+            # Fetch initial page and total pages concurrently
             page_futures = {}
             url_page_cache = {}
-            for year, search_link, start_date, end_date in search_links:
+            for year, search_link, start_date, end_date in group1_links:
                 urls_to_process = split_url(search_link, start_date, end_date)
                 for url, s_date, e_date in urls_to_process:
                     if url not in url_page_cache:
-                        future = executor.submit(fetch_page_data, url)
+                        future = executor.submit(fetch_page_data, url, proxy_group=PROXY_GROUP_1)
+                        page_futures[future] = (url, s_date, e_date)
+            for year, search_link, start_date, end_date in group2_links:
+                urls_to_process = split_url(search_link, start_date, end_date)
+                for url, s_date, e_date in urls_to_process:
+                    if url not in url_page_cache:
+                        future = executor.submit(fetch_page_data, url, proxy_group=PROXY_GROUP_2)
                         page_futures[future] = (url, s_date, e_date)
             
             for future in as_completed(page_futures):
@@ -305,10 +385,12 @@ def telegram_webhook():
                 all_post_links.extend(link for link in links if link not in seen_links)
                 seen_links.update(links)
 
+            # Fetch remaining pages concurrently
             additional_futures = {}
             for url, total_pages in url_page_cache.items():
+                proxy_group = PROXY_GROUP_1 if any(url in u for _, u, _, _ in group1_links) else PROXY_GROUP_2
                 for page in range(2, total_pages + 1):
-                    future = executor.submit(fetch_page_data, url, page)
+                    future = executor.submit(fetch_page_data, url, page, proxy_group=proxy_group)
                     additional_futures[future] = url
             
             for future in as_completed(additional_futures):
@@ -322,8 +404,14 @@ def telegram_webhook():
                 bot.edit_message_text(chat_id=chat_id, message_id=progress_msg.message_id, text=f"⚠️ No posts found for '{username}' ({start_year}-{end_year})")
                 return '', 200
 
-            logger.info(f"Processing {len(all_post_links)} unique post links: {all_post_links}")
-            post_futures = [executor.submit(process_post, link, username, start_year, end_year, media_by_date, global_seen) for link in all_post_links]
+            logger.info(f"Processing {len(all_post_links)} unique post links")
+            mid_point = len(all_post_links) // 2
+            group1_posts = all_post_links[:mid_point]
+            group2_posts = all_post_links[mid_point:]
+            post_futures = (
+                [executor.submit(process_post, link, username, start_year, end_year, media_by_date, global_seen, PROXY_GROUP_1) for link in group1_posts] +
+                [executor.submit(process_post, link, username, start_year, end_year, media_by_date, global_seen, PROXY_GROUP_2) for link in group2_posts]
+            )
             active_tasks[chat_id] = (executor, post_futures)
 
             processed_count = 0
@@ -333,7 +421,7 @@ def telegram_webhook():
                     raise ScraperError("Task cancelled by user")
                 future.result()
                 processed_count += 1
-                if processed_count % 5 == 0 or processed_count == total_posts:
+                if processed_count % 10 == 0 or processed_count == total_posts:
                     bot.edit_message_text(chat_id=chat_id, message_id=progress_msg.message_id, text=f"🔍 Processing '{username}' ({start_year}-{end_year}): {processed_count}/{total_posts} posts")
 
             bot.delete_message(chat_id=chat_id, message_id=progress_msg.message_id)
@@ -358,7 +446,7 @@ def telegram_webhook():
                 raise
         except Exception as e:
             bot.edit_message_text(chat_id=chat_id, message_id=progress_msg.message_id, text=f"❌ Error for '{username}': {str(e)}")
-            logger.error(f"Error processing {username}: {str(e)}")
+            logger.error(f"Error processing {username}: {str(e)}\n{traceback.format_exc()}")
         finally:
             if chat_id in active_tasks:
                 executor, _ = active_tasks[chat_id]
@@ -368,7 +456,16 @@ def telegram_webhook():
         return '', 200
     
     except Exception as e:
-        logger.critical(f"Unhandled error: {str(e)}")
+        logger.critical(f"Unhandled error: {str(e)}\n{traceback.format_exc()}")
+        if 'chat_id' in locals() and 'progress_msg' in locals():
+            try:
+                bot.edit_message_text(chat_id=chat_id, message_id=progress_msg.message_id, text=f"❌ Critical error: {str(e)}")
+            except:
+                pass
+        if chat_id in active_tasks:
+            executor, _ = active_tasks[chat_id]
+            del active_tasks[chat_id]
+            executor.shutdown(wait=False)
         return '', 200
 
 @app.route('/health', methods=['GET'])
@@ -384,11 +481,15 @@ def set_webhook():
     else:
         logger.error("RAILWAY_PUBLIC_DOMAIN not set")
 
+# Telegram Bot Setup
 try:
     TELEGRAM_BOT_TOKEN = os.environ['TELEGRAM_BOT_TOKEN']
     bot = telebot.TeleBot(TELEGRAM_BOT_TOKEN)
 except KeyError:
     logger.error("TELEGRAM_BOT_TOKEN environment variable not set!")
+    raise
+except Exception as e:
+    logger.error(f"Failed to initialize bot: {str(e)}")
     raise
 
 if __name__ == "__main__":
