@@ -47,7 +47,7 @@ FALLBACK_PROXIES = [
 ALLOWED_CHAT_IDS = {5809601894, 1285451259}
 active_tasks = {}
 
-# HTML initialization with horizontal styling for images
+# HTML initialization with masonry styling for images
 def init_html(file_path, title):
     if "images.html" in file_path:
         with open(file_path, "w", encoding="utf-8") as f:
@@ -56,36 +56,35 @@ def init_html(file_path, title):
 <head>
     <title>{title}</title>
     <style>
-        .gallery-container {{
-            display: flex; /* Horizontal layout */
-            flex-wrap: wrap; /* Wrap to next row if needed */
-            gap: 10px; /* Space between images */
+        .masonry-container {{
+            column-count: 3; /* Number of columns */
+            column-gap: 10px; /* Space between columns */
             padding: 10px;
         }}
-        .gallery-item {{
-            flex: 0 0 auto; /* Fixed width per item */
-            max-width: 250px; /* Max width of each image */
+        .masonry-item {{
+            break-inside: avoid; /* Prevent items from splitting across columns */
+            margin-bottom: 10px; /* Space between items in a column */
         }}
-        .gallery-item img {{
-            width: 100%; /* Fill item width */
+        .masonry-item img {{
+            width: 100%; /* Fill column width */
             height: auto; /* Maintain aspect ratio */
             display: block; /* Remove extra space */
             border-radius: 8px; /* Rounded corners */
         }}
         @media (max-width: 600px) {{
-            .gallery-item {{
-                max-width: 150px; /* Smaller images on medium screens */
+            .masonry-container {{
+                column-count: 2; /* Fewer columns on smaller screens */
             }}
         }}
         @media (max-width: 400px) {{
-            .gallery-item {{
-                max-width: 100%; /* Full width on small screens */
+            .masonry-container {{
+                column-count: 1; /* Single column on very small screens */
             }}
         }}
     </style>
 </head>
 <body>
-    <div class="gallery-container">
+    <div class="masonry-container">
 """)
     else:
         with open(file_path, "w", encoding="utf-8") as f:
@@ -94,7 +93,7 @@ def init_html(file_path, title):
 def append_to_html(file_path, content):
     with open(file_path, "a", encoding="utf-8") as f:
         f.write(content)
-        logger.info(f"Appended to {file_path}: {content[:50]}...")  # Log first 50 chars
+        logger.info(f"Appended to {file_path}: {content[:50]}...")
 
 def close_html(file_path):
     if "images.html" in file_path:
@@ -143,7 +142,7 @@ def generate_year_link(year, username, title_only=False):
 def split_url(url, start_date, end_date, max_pages=10):
     try:
         start_dt = datetime.strptime(start_date, "%Y-%m-%d")
-        end_dt = datetime.strptime(end_date, "%Y-%m-d")
+        end_dt = datetime.strptime(end_date, "%Y-%m-%d")
         total_pages = fetch_total_pages(url)
         if total_pages < max_pages:
             return [url]
@@ -182,7 +181,7 @@ def add_media(media_url, media_type, year):
     media_url = urljoin(BASE_URL, media_url) if media_url.startswith("/") else media_url
     
     if media_type == "image":
-        append_to_html(f"{SAVE_DIR}/{year}/images.html", f'<div class="gallery-item"><img src="{media_url}" alt="Image"></div>')
+        append_to_html(f"{SAVE_DIR}/{year}/images.html", f'<div class="masonry-item"><img src="{media_url}" alt="Image"></div>')
     elif media_type == "video":
         append_to_html(f"{SAVE_DIR}/{year}/videos.html", f'<p><video controls style="max-width:100%;"><source src="{media_url}" type="video/mp4"></video></p>')
     elif media_type == "gif":
@@ -361,7 +360,7 @@ def telegram_webhook():
             if cancel_task(chat_id):
                 send_telegram_message(chat_id=chat_id, text="✅ Scraping stopped", reply_to_message_id=message_id)
             else:
-                send_telegram_message(chat_id=chat_id, text="ℹ️ No active scraping to stop -1", reply_to_message_id=message_id)
+                send_telegram_message(chat_id=chat_id, text="ℹ️ No active scraping to stop", reply_to_message_id=message_id)
             return '', 200
 
         parts = text.split()
