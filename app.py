@@ -27,7 +27,7 @@ SAVE_DIR = "HTML_Pages"
 MERGE_DIR = "Merge"
 ERROR_LOG_FILE = os.path.join(MERGE_DIR, "error.txt")
 MAX_RETRIES = 3
-MAX_WORKERS = 6  # 3 for PROXY_GROUP_1, 3 for PROXY_GROUP_2
+MAX_WORKERS = 8  # 3 for PROXY_GROUP_1, 3 for PROXY_GROUP_2
 
 # Proxy configuration
 PROXY_GROUP_1 = {"http": "http://34.143.143.61:7777", "https": "http://34.143.143.61:7777"}  # 3 workers
@@ -151,7 +151,7 @@ def add_media(media_url, media_type, year):
     elif media_type == "video":
         append_to_html(f"{SAVE_DIR}/{year}/videos.html", f'<p><video controls style="max-width:100%;"><source src="{media_url}" type="video/mp4"></video></p>')
     elif media_type == "gif":
-        append_to_html(f"{SAVE_DIR}/{year}/gifs.html", f'<p><a href="{media_url}" target="_blank">View GIF</a></p>')
+        append_to_html(f"{SAVE_DIR}/{year}/gifs.html", f'<div><img src="{media_url}" alt="GIF" style="max-width:80%;height:auto;"></div>')
 
 # Process individual post, preserving site order
 def process_post(post_link, year, username, proxy_group):
@@ -194,8 +194,8 @@ def process_year(year, search_url, username, chat_id):
     urls_to_process = split_url(search_url, f"{year}-01-01", f"{year}-12-31") if total_pages >= 10 else [search_url]
     
     # Two executors: 3 workers each
-    executor1 = ThreadPoolExecutor(max_workers=3)  # For PROXY_GROUP_1
-    executor2 = ThreadPoolExecutor(max_workers=3)  # For PROXY_GROUP_2
+    executor1 = ThreadPoolExecutor(max_workers=4)  # For PROXY_GROUP_1
+    executor2 = ThreadPoolExecutor(max_workers=4)  # For PROXY_GROUP_2
     futures = []
     total_posts = 0
     
