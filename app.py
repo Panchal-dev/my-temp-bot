@@ -47,7 +47,6 @@ FALLBACK_PROXIES = [
 ALLOWED_CHAT_IDS = {5809601894, 1285451259}
 active_tasks = {}
 
-# HTML initialization with masonry styling for images
 def init_html(file_path, title):
     if "images.html" in file_path:
         with open(file_path, "w", encoding="utf-8") as f:
@@ -56,40 +55,46 @@ def init_html(file_path, title):
 <head>
     <title>{title}</title>
     <style>
-        .masonry-container {{
-            column-count: 3; /* Number of columns */
-            column-gap: 10px; /* Space between columns */
+        .grid-container {{
+            display: grid;
+            grid-template-columns: repeat(3, 1fr); /* Exactly 3 columns, equal width */
+            gap: 10px; /* Space between grid items */
             padding: 10px;
         }}
-        .masonry-item {{
-            break-inside: avoid; /* Prevent items from splitting across columns */
-            margin-bottom: 10px; /* Space between items in a column */
-        }}
-        .masonry-item img {{
+        .grid-item {{
             width: 100%; /* Fill column width */
+        }}
+        .grid-item img {{
+            width: 100%; /* Fill item width */
             height: auto; /* Maintain aspect ratio */
             display: block; /* Remove extra space */
             border-radius: 8px; /* Rounded corners */
         }}
         @media (max-width: 600px) {{
-            .masonry-container {{
-                column-count: 2; /* Fewer columns on smaller screens */
+            .grid-container {{
+                grid-template-columns: repeat(3, 1fr); /* Still 3 columns, but narrower */
+            }}
+            .grid-item {{
+                width: 100%; /* Adjust to narrower columns */
             }}
         }}
         @media (max-width: 400px) {{
-            .masonry-container {{
-                column-count: 1; /* Single column on very small screens */
+            .grid-container {{
+                grid-template-columns: repeat(3, 1fr); /* Still 3 columns */
+            }}
+            .grid-item {{
+                width: 100%; /* Full width within narrow columns */
             }}
         }}
     </style>
 </head>
 <body>
-    <div class="masonry-container">
+    <div class="grid-container">
 """)
     else:
         with open(file_path, "w", encoding="utf-8") as f:
             f.write(f"""<!DOCTYPE html><html><head><title>{title}</title></head><body>""")
-
+            
 def append_to_html(file_path, content):
     with open(file_path, "a", encoding="utf-8") as f:
         f.write(content)
