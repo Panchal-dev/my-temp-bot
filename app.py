@@ -52,16 +52,58 @@ active_tasks = {}
 
 # HTML initialization with styling
 def init_html(file_path, title):
-    with open(file_path, "w", encoding="utf-8") as f:
-        f.write(f"""<!DOCTYPE html><html><head><title>{title}</title></head><body>""")
+    if "images.html" in file_path:
+        with open(file_path, "w", encoding="utf-8") as f:
+            f.write(f"""<!DOCTYPE html>
+<html>
+<head>
+    <title>{title}</title>
+    <style>
+        .masonry-container {{
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(250px, 1fr));
+            grid-gap: 10px;
+            padding: 10px;
+        }}
+        .masonry-item {{
+            break-inside: avoid;
+        }}
+        .masonry-item img {{
+            width: 100%;
+            height: auto;
+            display: block;
+            border-radius: 8px;
+        }}
+        @media (max-width: 600px) {{
+            .masonry-container {{
+                grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+            }}
+        }}
+        @media (max-width: 400px) {{
+            .masonry-container {{
+                grid-template-columns: 1fr;
+            }}
+        }}
+    </style>
+</head>
+<body>
+    <div class="masonry-container">
+""")
+    else:
+        with open(file_path, "w", encoding="utf-8") as f:
+            f.write(f"""<!DOCTYPE html><html><head><title>{title}</title></head><body>""")
 
 def append_to_html(file_path, content):
     with open(file_path, "a", encoding="utf-8") as f:
         f.write(content)
 
 def close_html(file_path):
-    with open(file_path, "a", encoding="utf-8") as f:
-        f.write("</body></html>")
+    if "images.html" in file_path:
+        with open(file_path, "a", encoding="utf-8") as f:
+            f.write("</div></body></html>")
+    else:
+        with open(file_path, "a", encoding="utf-8") as f:
+            f.write("</body></html>")
 
 def log_error(url, error_message):
     with open(ERROR_LOG_FILE, "a", encoding="utf-8") as f:
@@ -147,7 +189,7 @@ def add_media(media_url, media_type, year):
     media_url = urljoin(BASE_URL, media_url) if media_url.startswith("/") else media_url
     
     if media_type == "image":
-        append_to_html(f"{SAVE_DIR}/{year}/images.html", f'<div><img src="{media_url}" alt="Image" style="max-width:80%;height:auto;"></div>')
+        append_to_html(f"{SAVE_DIR}/{year}/images.html", f'<div class="masonry-item"><img src="{media_url}" alt="Image"></div>')
     elif media_type == "video":
         append_to_html(f"{SAVE_DIR}/{year}/videos.html", f'<p><video controls style="max-width:100%;"><source src="{media_url}" type="video/mp4"></video></p>')
     elif media_type == "gif":

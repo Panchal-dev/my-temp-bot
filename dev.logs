@@ -1,0 +1,5 @@
+2025-04-10 14:12:22,086 - INFO - Starting bypass for https://adrinolinks.in/HucM6
+2025-04-10 14:12:22,675 - ERROR - Failed to access initial URL: 500
+2025-04-10 14:12:22,677 - INFO - Page structure saved to structure.html
+2025-04-10 14:23:20,191 - INFO - Starting bypass for https://adrinolinks.in/HucM6
+2025-04-10 14:23:28,430 - ERROR - An error occurred: HTTPSConnectionPool(host='adrinolinks.in', port=443): Max retries exceeded with url: /HucM6 (Caused by ResponseError('too many 500 error responses'))
