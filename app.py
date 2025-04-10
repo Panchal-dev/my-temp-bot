@@ -206,13 +206,16 @@ def normalize_url(url):
     return parsed.scheme + "://" + parsed.netloc + parsed.path
 
 def add_media(media_url, media_type, year, media_list=None):
-    if media_url.startswith("data:image") or "addonflare/awardsystem/icons/" in media_url or any(keyword in media_url.lower() for keyword in ["avatars", "ozzmodz_badges_badge", "premium", "likes"]):
+    # Relaxed filtering to only exclude specific unwanted patterns
+    exclude_keywords = ["addonflare/awardsystem/icons/", "ozzmodz_badges_badge", "premium", "likes"]
+    if media_url.startswith("data:image") or any(keyword in media_url.lower() for keyword in exclude_keywords):
         logger.info(f"Filtered out {media_url} due to exclusion rules")
         return
     media_url = urljoin(BASE_URL, media_url) if media_url.startswith("/") else media_url
     
     if media_type == "image" and media_list is not None:
-        media_list.append(media_url)  # Timestamp added in process_post
+        logger.info(f"Adding image to list: {media_url}")
+        media_list.append(media_url)
     elif media_type == "video":
         append_to_html(f"{SAVE_DIR}/{year}/videos.html", f'<p><video controls style="max-width:100%;"><source src="{media_url}" type="video/mp4"></video></p>')
     elif media_type == "gif":
@@ -246,7 +249,7 @@ def process_post(post_link, year, username, proxy_group, image_list):
                     media_type = "gif" if src.lower().endswith(".gif") else "image"
                     logger.info(f"Found {media_type}: {src} at {timestamp}")
                     add_media(src, media_type, year, image_list if media_type == "image" else None)
-                    if media_type == "image":
+                    if media_type == "image" and image_list and isinstance(image_list[-1], str):
                         image_list[-1] = (timestamp, image_list[-1])  # Replace URL with (timestamp, URL) tuple
                 elif media.name == 'video' and media.get('src'):
                     logger.info(f"Found video: {media['src']}")
@@ -260,7 +263,7 @@ def process_post(post_link, year, username, proxy_group, image_list):
                         media_type = "gif" if href.lower().endswith('.gif') else "image" if href.endswith(('.jpg', '.jpeg', '.png')) else "video"
                         logger.info(f"Found {media_type} from link: {href} at {timestamp}")
                         add_media(href, media_type, year, image_list if media_type == "image" else None)
-                        if media_type == "image":
+                        if media_type == "image" and image_list and isinstance(image_list[-1], str):
                             image_list[-1] = (timestamp, image_list[-1])  # Replace URL with (timestamp, URL) tuple
     except Exception as e:
         log_error(post_link, str(e))
@@ -431,7 +434,7 @@ def telegram_webhook():
             if cancel_task(chat_id):
                 send_telegram_message(chat_id=chat_id, text="✅ Scraping stopped", reply_to_message_id=message_id)
             else:
-                send_telegram_message(chat_id=chat_id, text="ℹ️ No active scraping to stop", reply_to_message_id=message_id)
+                send_telegram_message(chat_id=chat_id, text="ℹ️ No active scraping to stop - 3", reply_to_message_id=message_id)
             return '', 200
 
         parts = text.split()
@@ -522,7 +525,7 @@ def telegram_webhook():
                 if executor2:
                     executor2.shutdown(wait=False)
                 del active_tasks[chat_id]
-            shutil.rmtree(SAVE_DIR, exist_ok=True)
+            shutil.rmtree(SAVE_DIR, ignore_errors=True)
 
         return '', 200
     
