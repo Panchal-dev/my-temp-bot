@@ -47,7 +47,7 @@ FALLBACK_PROXIES = [
 ALLOWED_CHAT_IDS = {5809601894, 1285451259}
 active_tasks = {}
 
-# HTML initialization with Pinterest-style masonry for images
+# HTML initialization with grid layout for images
 def init_html(file_path, title):
     if "images.html" in file_path:
         with open(file_path, "w", encoding="utf-8") as f:
@@ -62,37 +62,32 @@ def init_html(file_path, title):
             box-sizing: border-box;
             margin: 0;
         }}
-        .masonry-container {{
+        .grid-container {{
             display: grid;
+            grid-template-columns: repeat(2, 1fr); /* 2 columns by default */
+            gap: 16px; /* Equivalent to Tailwind's gap-4 (1rem = 16px) */
             padding: 20px;
-            gap: 10px;
-            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
-            grid-auto-rows: 10px; /* Small row height for dynamic spanning */
-            grid-auto-flow: dense; /* Fill gaps */
         }}
-        .masonry-item {{
-            grid-row: auto / span 20; /* Default span, adjusted dynamically by content */
-        }}
-        .masonry-item img {{
-            width: 100%;
+        .grid-item img {{
             height: auto;
+            max-width: 100%;
+            border-radius: 8px; /* Equivalent to rounded-lg */
             display: block;
-            border-radius: 8px;
         }}
-        @media (max-width: 600px) {{
-            .masonry-container {{
-                grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+        @media (min-width: 768px) {{ /* md: breakpoint in Tailwind */
+            .grid-container {{
+                grid-template-columns: repeat(3, 1fr); /* 3 columns on medium screens */
             }}
         }}
-        @media (max-width: 400px) {{
-            .masonry-container {{
-                grid-template-columns: 1fr; /* Single column on small screens */
+        @media (max-width: 480px) {{ /* Smaller screens */
+            .grid-container {{
+                grid-template-columns: 1fr; /* 1 column on small screens */
             }}
         }}
     </style>
 </head>
 <body>
-    <div class="masonry-container">
+    <div class="grid-container">
 """)
     else:
         with open(file_path, "w", encoding="utf-8") as f:
@@ -189,7 +184,7 @@ def add_media(media_url, media_type, year):
     media_url = urljoin(BASE_URL, media_url) if media_url.startswith("/") else media_url
     
     if media_type == "image":
-        append_to_html(f"{SAVE_DIR}/{year}/images.html", f'<div class="masonry-item"><img src="{media_url}" alt="Image"></div>')
+        append_to_html(f"{SAVE_DIR}/{year}/images.html", f'<div class="grid-item"><img src="{media_url}" alt="Image"></div>')
     elif media_type == "video":
         append_to_html(f"{SAVE_DIR}/{year}/videos.html", f'<p><video controls style="max-width:100%;"><source src="{media_url}" type="video/mp4"></video></p>')
     elif media_type == "gif":
@@ -353,7 +348,7 @@ def telegram_webhook():
             return '', 200
 
         chat_id = update['message']['chat']['id']
-        message_id = update['message'].get('message_id')
+        message_id = update['message'].getolly('message_id')
         text = update['message'].get('text', '').strip()
 
         if chat_id not in ALLOWED_CHAT_IDS:
