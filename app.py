@@ -159,7 +159,7 @@ def generate_year_link(year, username, title_only=False):
     end_date = f"{year}-12-31"
     url = f"{BASE_URL}/search/39143295/?q={username.replace(' ', '+')}&c[newer_than]={start_date}&c[older_than]={end_date}"
     url += "&c[title_only]=1" if title_only else "&c[title_only]=0"
-    url += "&o=date"
+    url += "&o=date"  # Newest first
     return url
 
 def split_url(url, start_date, end_date, max_pages=10):
@@ -201,21 +201,21 @@ def normalize_url(url):
     parsed = urlparse(url)
     return parsed.scheme + "://" + parsed.netloc + parsed.path
 
-def add_media(media_url, media_type, year, image_urls=None):
+def add_media(media_url, media_type, year, media_list=None):
     if media_url.startswith("data:image") or "addonflare/awardsystem/icons/" in media_url or any(keyword in media_url.lower() for keyword in ["avatars", "ozzmodz_badges_badge", "premium", "likes"]):
         logger.info(f"Filtered out {media_url} due to exclusion rules")
         return
     media_url = urljoin(BASE_URL, media_url) if media_url.startswith("/") else media_url
     
-    if media_type == "image" and image_urls is not None:
-        image_urls.append(media_url)
+    if media_type == "image" and media_list is not None:
+        media_list.append(media_url)  # Timestamp added in process_post
     elif media_type == "video":
         append_to_html(f"{SAVE_DIR}/{year}/videos.html", f'<p><video controls style="max-width:100%;"><source src="{media_url}" type="video/mp4"></video></p>')
     elif media_type == "gif":
         append_to_html(f"{SAVE_DIR}/{year}/gifs.html", f'<div><img src="{media_url}" alt="GIF" style="max-width:80%;height:auto;"></div>')
         logger.info(f"Added GIF: {media_url}")
 
-def process_post(post_link, year, username, proxy_group, image_urls):
+def process_post(post_link, year, username, proxy_group, image_list):
     try:
         response = make_request(post_link, proxy_group)
         soup = BeautifulSoup(response.text, 'html.parser')
@@ -226,26 +226,38 @@ def process_post(post_link, year, username, proxy_group, image_urls):
         articles = [a for a in articles if a and (username_lower in a.get_text(separator=" ").lower() or username_lower in a.get('data-author', '').lower())]
         
         for article in articles:
+            # Extract timestamp from the post
+            time_tag = article.find('time', class_='u-dt')
+            if time_tag and 'datetime' in time_tag.attrs:
+                timestamp = datetime.fromisoformat(time_tag['datetime'].replace('Z', '+00:00'))
+            else:
+                timestamp = datetime.now()  # Fallback if no timestamp found
+                logger.warning(f"No timestamp found for post {post_link}, using current time")
+            
             for media in article.find_all(['img', 'video', 'source', 'a'], recursive=True):
                 if media.name == 'img' and media.get('src'):
                     src = media['src']
                     if media.get('data-url'):
                         src = media['data-url']
                     media_type = "gif" if src.lower().endswith(".gif") else "image"
-                    logger.info(f"Found {media_type}: {src}")
-                    add_media(src, media_type, year, image_urls)
+                    logger.info(f"Found {media_type}: {src} at {timestamp}")
+                    add_media(src, media_type, year, image_list if media_type == "image" else None)
+                    if media_type == "image":
+                        image_list[-1] = (timestamp, image_list[-1])  # Replace URL with (timestamp, URL) tuple
                 elif media.name == 'video' and media.get('src'):
                     logger.info(f"Found video: {media['src']}")
-                    add_media(media['src'], "video", year, image_urls)
+                    add_media(media['src'], "video", year)
                 elif media.name == 'source' and media.get('src'):
                     logger.info(f"Found video source: {media['src']}")
-                    add_media(media['src'], "video", year, image_urls)
+                    add_media(media['src'], "video", year)
                 elif media.name == 'a' and media.get('href'):
                     href = media['href']
                     if any(href.lower().endswith(ext) for ext in ['.jpg', '.jpeg', '.png', '.gif', '.mp4', '.webm', '.mov']):
                         media_type = "gif" if href.lower().endswith('.gif') else "image" if href.endswith(('.jpg', '.jpeg', '.png')) else "video"
-                        logger.info(f"Found {media_type} from link: {href}")
-                        add_media(href, media_type, year, image_urls)
+                        logger.info(f"Found {media_type} from link: {href} at {timestamp}")
+                        add_media(href, media_type, year, image_list if media_type == "image" else None)
+                        if media_type == "image":
+                            image_list[-1] = (timestamp, image_list[-1])  # Replace URL with (timestamp, URL) tuple
     except Exception as e:
         log_error(post_link, str(e))
 
@@ -263,7 +275,7 @@ def process_year(year, search_url, username, chat_id):
     executor2 = ThreadPoolExecutor(max_workers=4)
     futures = []
     total_posts = 0
-    image_urls = []
+    image_list = []  # List of (timestamp, URL) tuples
     
     for url in urls_to_process:
         total_pages = fetch_total_pages(url, PROXY_GROUP_1)
@@ -274,24 +286,28 @@ def process_year(year, search_url, username, chat_id):
             for i, post in enumerate(post_links):
                 proxy_group = PROXY_GROUP_1 if i < half else PROXY_GROUP_2
                 executor = executor1 if i < half else executor2
-                future = executor.submit(process_post, post, year, username, proxy_group, image_urls)
+                future = executor.submit(process_post, post, year, username, proxy_group, image_list)
                 futures.append(future)
     
     _, _, progress_msg_id = active_tasks[chat_id]
     active_tasks[chat_id] = ((executor1, executor2), futures, progress_msg_id)
     
-    processed_count = 0
     for future in as_completed(futures):
         if chat_id not in active_tasks:
             raise Exception("Task cancelled by user")
         future.result()
-        processed_count += 1
-        if processed_count % 50 == 0 or processed_count == total_posts:  # Reduced frequency
-            bot.edit_message_text(chat_id=chat_id, message_id=progress_msg_id, 
-                                 text=f"🔍 Processing '{username}' ({year}): {processed_count}/{total_posts} posts")
-            time.sleep(TELEGRAM_RATE_LIMIT_DELAY)  # Delay after progress update
     
-    unique_image_urls = list(dict.fromkeys(normalize_url(url) for url in image_urls))
+    # Sort by timestamp (newest first) and deduplicate by URL
+    image_list.sort(key=lambda x: x[0], reverse=True)  # Newest first
+    seen_urls = set()
+    unique_image_urls = []
+    for timestamp, url in image_list:
+        normalized_url = normalize_url(url)
+        if normalized_url not in seen_urls:
+            seen_urls.add(normalized_url)
+            unique_image_urls.append(url)
+            logger.info(f"Kept image: {url} with timestamp {timestamp}")
+    
     init_html(f"{year_dir}/images.html", f"{username} - Images Links ({year}-{year})", unique_image_urls)
     
     for file_type in ["videos", "gifs"]:
@@ -344,7 +360,7 @@ def send_telegram_message(chat_id, text, max_retries=MAX_RETRIES, **kwargs):
     for attempt in range(max_retries):
         try:
             response = bot.send_message(chat_id=chat_id, text=text, **kwargs)
-            time.sleep(TELEGRAM_RATE_LIMIT_DELAY)  # Rate limit delay
+            time.sleep(TELEGRAM_RATE_LIMIT_DELAY)
             return response
         except ApiTelegramException as e:
             if e.error_code == 429:
@@ -363,7 +379,7 @@ def send_telegram_document(chat_id, file_buffer, filename, caption, max_retries=
         try:
             file_buffer.seek(0)
             response = bot.send_document(chat_id=chat_id, document=file_buffer, visible_file_name=filename, caption=caption[:1024])
-            time.sleep(TELEGRAM_RATE_LIMIT_DELAY)  # Rate limit delay
+            time.sleep(TELEGRAM_RATE_LIMIT_DELAY)
             return response
         except ApiTelegramException as e:
             if e.error_code == 429:
@@ -411,7 +427,7 @@ def telegram_webhook():
             if cancel_task(chat_id):
                 send_telegram_message(chat_id=chat_id, text="✅ Scraping stopped", reply_to_message_id=message_id)
             else:
-                send_telegram_message(chat_id=chat_id, text="ℹ️ No active scraping to stop", reply_to_message_id=message_id)
+                send_telegram_message(chat_id=chat_id, text="ℹ️ No active scraping to stop -2", reply_to_message_id=message_id)
             return '', 200
 
         parts = text.split()
