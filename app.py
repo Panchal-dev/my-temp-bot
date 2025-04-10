@@ -47,7 +47,7 @@ FALLBACK_PROXIES = [
 ALLOWED_CHAT_IDS = {5809601894, 1285451259}
 active_tasks = {}
 
-# HTML initialization with styling
+# HTML initialization with horizontal styling for images
 def init_html(file_path, title):
     if "images.html" in file_path:
         with open(file_path, "w", encoding="utf-8") as f:
@@ -56,35 +56,36 @@ def init_html(file_path, title):
 <head>
     <title>{title}</title>
     <style>
-        .masonry-container {{
-            display: grid;
-            grid-template-columns: repeat(auto-fill, minmax(250px, 1fr));
-            grid-gap: 10px;
+        .gallery-container {{
+            display: flex; /* Horizontal layout */
+            flex-wrap: wrap; /* Wrap to next row if needed */
+            gap: 10px; /* Space between images */
             padding: 10px;
         }}
-        .masonry-item {{
-            break-inside: avoid;
+        .gallery-item {{
+            flex: 0 0 auto; /* Fixed width per item */
+            max-width: 250px; /* Max width of each image */
         }}
-        .masonry-item img {{
-            width: 100%;
-            height: auto;
-            display: block;
-            border-radius: 8px;
+        .gallery-item img {{
+            width: 100%; /* Fill item width */
+            height: auto; /* Maintain aspect ratio */
+            display: block; /* Remove extra space */
+            border-radius: 8px; /* Rounded corners */
         }}
         @media (max-width: 600px) {{
-            .masonry-container {{
-                grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+            .gallery-item {{
+                max-width: 150px; /* Smaller images on medium screens */
             }}
         }}
         @media (max-width: 400px) {{
-            .masonry-container {{
-                grid-template-columns: 1fr;
+            .gallery-item {{
+                max-width: 100%; /* Full width on small screens */
             }}
         }}
     </style>
 </head>
 <body>
-    <div class="masonry-container">
+    <div class="gallery-container">
 """)
     else:
         with open(file_path, "w", encoding="utf-8") as f:
@@ -136,13 +137,13 @@ def generate_year_link(year, username, title_only=False):
     end_date = f"{year}-12-31"
     url = f"{BASE_URL}/search/39143295/?q={username.replace(' ', '+')}&c[newer_than]={start_date}&c[older_than]={end_date}"
     url += "&c[title_only]=1" if title_only else "&c[title_only]=0"
-    url += "&o=date"
+    url += "&o=date"  # Ensures newest first (Dec 31 to Jan 1)
     return url
 
 def split_url(url, start_date, end_date, max_pages=10):
     try:
         start_dt = datetime.strptime(start_date, "%Y-%m-%d")
-        end_dt = datetime.strptime(end_date, "%Y-%m-%d")
+        end_dt = datetime.strptime(end_date, "%Y-%m-d")
         total_pages = fetch_total_pages(url)
         if total_pages < max_pages:
             return [url]
@@ -181,12 +182,12 @@ def add_media(media_url, media_type, year):
     media_url = urljoin(BASE_URL, media_url) if media_url.startswith("/") else media_url
     
     if media_type == "image":
-        append_to_html(f"{SAVE_DIR}/{year}/images.html", f'<div class="masonry-item"><img src="{media_url}" alt="Image"></div>')
+        append_to_html(f"{SAVE_DIR}/{year}/images.html", f'<div class="gallery-item"><img src="{media_url}" alt="Image"></div>')
     elif media_type == "video":
         append_to_html(f"{SAVE_DIR}/{year}/videos.html", f'<p><video controls style="max-width:100%;"><source src="{media_url}" type="video/mp4"></video></p>')
     elif media_type == "gif":
         append_to_html(f"{SAVE_DIR}/{year}/gifs.html", f'<div><img src="{media_url}" alt="GIF" style="max-width:80%;height:auto;"></div>')
-        logger.info(f"Added GIF: {media_url} to {SAVE_DIR}/{year}/gifs.html")
+        logger.info(f"Added GIF: {media_url}")
 
 def process_post(post_link, year, username, proxy_group):
     try:
@@ -202,7 +203,7 @@ def process_post(post_link, year, username, proxy_group):
             for media in article.find_all(['img', 'video', 'source', 'a'], recursive=True):
                 if media.name == 'img' and media.get('src'):
                     src = media['src']
-                    if media.get('data-url'):
+                    if media.get('data-url'):  # Handle watermarked images
                         src = media['data-url']
                     media_type = "gif" if src.lower().endswith(".gif") else "image"
                     logger.info(f"Found {media_type}: {src}")
@@ -238,7 +239,7 @@ def process_year(year, search_url, username, chat_id):
     
     for url in urls_to_process:
         total_pages = fetch_total_pages(url, PROXY_GROUP_1)
-        for page in range(total_pages, 0, -1):
+        for page in range(total_pages, 0, -1):  # Newest to oldest
             post_links = scrape_post_links(f"{url}&page={page}", PROXY_GROUP_1)
             total_posts += len(post_links)
             half = len(post_links) // 2
@@ -268,14 +269,14 @@ def process_year(year, search_url, username, chat_id):
 def merge_html_files(file_type, years, merge_dir):
     merge_file_path = f"{merge_dir}/{file_type}_temp.html"
     init_html(merge_file_path, f"Merged {file_type.capitalize()} Links")
-    for year in years:
+    for year in years:  # Order preserved by processing years in reverse
         year_file_path = f"{SAVE_DIR}/{year}/{file_type}.html"
         if os.path.exists(year_file_path) and os.path.getsize(year_file_path) > 0:
             with open(year_file_path, "r", encoding="utf-8") as f:
                 content = re.search(r'<body>(.*?)</body>', f.read(), re.DOTALL)
                 if content:
                     append_to_html(merge_file_path, content.group(1))
-                    logger.info(f"Merged content from {year_file_path} into {merge_file_path}")
+                    logger.info(f"Merged {year_file_path} into {merge_file_path}")
     close_html(merge_file_path)
     return merge_file_path
 
@@ -292,7 +293,7 @@ def deduplicate_html(file_type, temp_file_path, final_file_path):
             url = element.img.get("src")
         elif file_type == "videos" and element.name == "p" and element.video and element.video.source:
             url = element.video.source.get("src")
-        elif file_type == "gifs" and element.name == "div" and element.img:  # Updated for GIFs
+        elif file_type == "gifs" and element.name == "div" and element.img:
             url = element.img.get("src")
         
         if url and url not in seen_urls:
@@ -390,7 +391,7 @@ def telegram_webhook():
         active_tasks[chat_id] = (None, [], progress_msg.message_id)
 
         try:
-            years = list(range(end_year, start_year - 1, -1))
+            years = list(range(end_year, start_year - 1, -1))  # Newest year first
             for year in years:
                 search_url = generate_year_link(year, username, title_only)
                 process_year(year, search_url, username, chat_id)
