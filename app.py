@@ -27,7 +27,7 @@ SAVE_DIR = "HTML_Pages"
 MERGE_DIR = "Merge"
 ERROR_LOG_FILE = os.path.join(MERGE_DIR, "error.txt")
 MAX_RETRIES = 3
-MAX_WORKERS = 6  # 3 for PROXY_GROUP_1, 3 for PROXY_GROUP_2
+MAX_WORKERS = 10  # 3 for PROXY_GROUP_1, 3 for PROXY_GROUP_2
 
 # Proxy configuration
 PROXY_GROUP_1 = {"http": "http://34.143.143.61:7777", "https": "http://34.143.143.61:7777"}  # 3 workers
@@ -267,8 +267,8 @@ def process_year(year, search_url, username, chat_id):
     urls_to_process = split_url(search_url, f"{year}-01-01", f"{year}-12-31") if total_pages >= 10 else [search_url]
     
     # Two executors: 3 workers each
-    executor1 = ThreadPoolExecutor(max_workers=3)  # For PROXY_GROUP_1
-    executor2 = ThreadPoolExecutor(max_workers=3)  # For PROXY_GROUP_2
+    executor1 = ThreadPoolExecutor(max_workers=5)  # For PROXY_GROUP_1
+    executor2 = ThreadPoolExecutor(max_workers=5)  # For PROXY_GROUP_2
     futures = []
     total_posts = 0
     
@@ -295,7 +295,7 @@ def process_year(year, search_url, username, chat_id):
             raise Exception("Task cancelled by user")
         future.result()
         processed_count += 1
-        if processed_count % 10 == 0 or processed_count == total_posts:
+        if processed_count % 75 == 0 or processed_count == total_posts:
             bot.edit_message_text(chat_id=chat_id, message_id=progress_msg_id, 
                                  text=f"🔍 Processing '{username}' ({year}): {processed_count}/{total_posts} posts")
     
