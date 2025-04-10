@@ -2,7 +2,7 @@ import os
 import requests
 from bs4 import BeautifulSoup
 import re
-from urllib.parse import urljoin
+from urllib.parse import urljoin, urlparse
 from flask import Flask, request
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from io import BytesIO
@@ -61,6 +61,7 @@ def init_html(file_path, title):
             flex-wrap: wrap; /* Wrap to next row if needed */
             gap: 10px; /* Space between images */
             padding: 10px;
+            direction: ltr; /* Ensure left-to-right flow */
         }}
         .gallery-item {{
             flex: 0 0 auto; /* Fixed width per item */
@@ -94,7 +95,7 @@ def init_html(file_path, title):
 def append_to_html(file_path, content):
     with open(file_path, "a", encoding="utf-8") as f:
         f.write(content)
-        logger.info(f"Appended to {file_path}: {content[:50]}...")  # Log first 50 chars
+        logger.info(f"Appended to {file_path}: {content[:50]}...")
 
 def close_html(file_path):
     if "images.html" in file_path:
@@ -143,7 +144,7 @@ def generate_year_link(year, username, title_only=False):
 def split_url(url, start_date, end_date, max_pages=10):
     try:
         start_dt = datetime.strptime(start_date, "%Y-%m-%d")
-        end_dt = datetime.strptime(end_date, "%Y-%m-d")
+        end_dt = datetime.strptime(end_date, "%Y-%m-%d")
         total_pages = fetch_total_pages(url)
         if total_pages < max_pages:
             return [url]
@@ -174,6 +175,11 @@ def scrape_post_links(search_url, proxy_group=PROXY_GROUP_1):
     soup = BeautifulSoup(response.text, 'html.parser')
     return list(dict.fromkeys(urljoin(BASE_URL, link['href']) for link in soup.find_all('a', href=True) 
                              if 'threads/' in link['href'] and not link['href'].startswith('#') and not 'page-' in link['href']))
+
+def normalize_url(url):
+    # Normalize URL by removing query params and fragments for deduplication
+    parsed = urlparse(url)
+    return parsed.scheme + "://" + parsed.netloc + parsed.path
 
 def add_media(media_url, media_type, year):
     if media_url.startswith("data:image") or "addonflare/awardsystem/icons/" in media_url or any(keyword in media_url.lower() for keyword in ["avatars", "ozzmodz_badges_badge", "premium", "likes"]):
@@ -269,7 +275,7 @@ def process_year(year, search_url, username, chat_id):
 def merge_html_files(file_type, years, merge_dir):
     merge_file_path = f"{merge_dir}/{file_type}_temp.html"
     init_html(merge_file_path, f"Merged {file_type.capitalize()} Links")
-    for year in years:  # Order preserved by processing years in reverse
+    for year in years:  # Newest to oldest
         year_file_path = f"{SAVE_DIR}/{year}/{file_type}.html"
         if os.path.exists(year_file_path) and os.path.getsize(year_file_path) > 0:
             with open(year_file_path, "r", encoding="utf-8") as f:
@@ -287,14 +293,14 @@ def deduplicate_html(file_type, temp_file_path, final_file_path):
     seen_urls = set()
     unique_content = []
     
-    for element in soup.body.find_all(recursive=False):
+    for element in soup.body.find_all(recursive=False):  # Order preserved from input
         url = None
         if file_type == "images" and element.name == "div" and element.img:
-            url = element.img.get("src")
+            url = normalize_url(element.img.get("src"))
         elif file_type == "videos" and element.name == "p" and element.video and element.video.source:
-            url = element.video.source.get("src")
+            url = normalize_url(element.video.source.get("src"))
         elif file_type == "gifs" and element.name == "div" and element.img:
-            url = element.img.get("src")
+            url = normalize_url(element.img.get("src"))
         
         if url and url not in seen_urls:
             seen_urls.add(url)
@@ -361,7 +367,7 @@ def telegram_webhook():
             if cancel_task(chat_id):
                 send_telegram_message(chat_id=chat_id, text="✅ Scraping stopped", reply_to_message_id=message_id)
             else:
-                send_telegram_message(chat_id=chat_id, text="ℹ️ No active scraping to stop-1", reply_to_message_id=message_id)
+                send_telegram_message(chat_id=chat_id, text="ℹ️ No active scraping to stop", reply_to_message_id=message_id)
             return '', 200
 
         parts = text.split()
@@ -407,7 +413,8 @@ def telegram_webhook():
                         html_file = BytesIO(f.read())
                         html_file.name = f"{username.replace(' ', '_')}_{file_type}.html"
                         with open(final_file_path, 'r', encoding='utf-8') as f2:
-                            total_items = len(BeautifulSoup(f2.read(), 'html.parser').body.find_all(recursive=False))
+                            soup = BeautifulSoup(f2.read(), 'html.parser')
+                            total_items = len(soup.body.find_all(recursive=False)) if soup.body else 0
                         send_telegram_document(chat_id, html_file, html_file.name, 
                                               f"Found {total_items} {file_type} for '{username}' ({start_year}-{end_year})")
                         logger.info(f"Sent {file_type}.html with {total_items} items")
