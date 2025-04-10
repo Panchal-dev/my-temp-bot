@@ -2,7 +2,7 @@ import os
 import requests
 from bs4 import BeautifulSoup
 import re
-from urllib.parse import urljoin, urlparse
+from urllib.parse import urljoin
 from flask import Flask, request
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from io import BytesIO
@@ -11,8 +11,6 @@ from datetime import datetime, timedelta
 import time
 import logging
 import shutil
-import json
-from telebot.apihelper import ApiTelegramException
 
 # Initialize logging
 logging.basicConfig(
@@ -29,12 +27,11 @@ SAVE_DIR = "HTML_Pages"
 MERGE_DIR = "Merge"
 ERROR_LOG_FILE = os.path.join(MERGE_DIR, "error.txt")
 MAX_RETRIES = 3
-MAX_WORKERS = 8  # 4 for PROXY_GROUP_1, 4 for PROXY_GROUP_2
-TELEGRAM_RATE_LIMIT_DELAY = 2  # Seconds between Telegram API calls
+MAX_WORKERS = 6  # 3 for PROXY_GROUP_1, 3 for PROXY_GROUP_2
 
 # Proxy configuration
-PROXY_GROUP_1 = {"http": "http://34.143.143.61:7777", "https": "http://34.143.143.61:7777"}
-PROXY_GROUP_2 = {"http": "http://45.140.143.77:18080", "https": "http://45.140.143.77:18080"}
+PROXY_GROUP_1 = {"http": "http://34.143.143.61:7777", "https": "http://34.143.143.61:7777"}  # 3 workers
+PROXY_GROUP_2 = {"http": "http://45.140.143.77:18080", "https": "http://45.140.143.77:18080"}  # 3 workers
 FALLBACK_PROXIES = [
     {"http": "http://185.229.241.132:8880", "https": "http://185.229.241.132:8880"},
     {"http": "http://45.87.68.9:15321", "https": "http://45.87.68.9:15321"},
@@ -47,19 +44,16 @@ FALLBACK_PROXIES = [
     {"http": "http://43.153.16.91:13001", "https": "http://43.153.16.91:13001"}
 ]
 
+# Allowed chat IDs (replace with your Telegram chat IDs)
 ALLOWED_CHAT_IDS = {5809601894, 1285451259}
+
+# Global task tracking
 active_tasks = {}
 
-# HTML initialization with masonry styling for images
-def init_html(file_path, title, image_urls=None):
-    if "images.html" in file_path:
-        image_urls = image_urls or []
-        if not all(isinstance(url, str) for url in image_urls):
-            logger.error(f"image_urls contains non-string items: {image_urls}")
-            raise ValueError("All image URLs must be strings")
-        image_urls_json = json.dumps(image_urls)
-        with open(file_path, "w", encoding="utf-8") as f:
-            f.write(f"""<!DOCTYPE html>
+# HTML initialization for images with masonry layout
+def init_images_html(file_path, title, start_year, end_year):
+    with open(file_path, "w", encoding="utf-8") as f:
+        f.write(f"""<!DOCTYPE html>
 <html>
 <head>
     <title>{title}</title>
@@ -91,49 +85,58 @@ def init_html(file_path, title, image_urls=None):
     </style>
 </head>
 <body>
-    <h1>{title}</h1>
+    <h1>{title} ({start_year}-{end_year})</h1>
     <div class="masonry-container" id="masonry"></div>
-
     <script>
-        const imageUrls = {image_urls_json};
-
-        const columns = 3;
-        const masonry = document.getElementById('masonry');
-
-        const colDivs = [];
-        for (let i = 0; i < columns; i++) {{
-            const col = document.createElement('div');
-            col.className = 'column';
-            masonry.appendChild(col);
-            colDivs.push(col);
-        }}
-
-        imageUrls.forEach((url, index) => {{
-            const img = document.createElement('img');
-            img.src = url;
-            colDivs[index % columns].appendChild(img);
-        }});
+        const imageUrls = [];
     </script>
-</body>
-</html>""")
-    else:
-        with open(file_path, "w", encoding="utf-8") as f:
-            f.write(f"""<!DOCTYPE html><html><head><title>{title}</title></head><body>""")
+""")
+
+# HTML initialization for videos and gifs
+def init_media_html(file_path, title):
+    with open(file_path, "w", encoding="utf-8") as f:
+        f.write(f"""<!DOCTYPE html><html><head><title>{title}</title></head><body>""")
 
 def append_to_html(file_path, content):
     with open(file_path, "a", encoding="utf-8") as f:
         f.write(content)
-        logger.info(f"Appended to {file_path}: {content[:50]}...")
 
-def close_html(file_path):
-    if not "images.html" in file_path:
-        with open(file_path, "a", encoding="utf-8") as f:
-            f.write("</body></html>")
+def close_images_html(file_path):
+    with open(file_path, "a", encoding="utf-8") as f:
+        f.write("""
+    <script>
+        const columns = 3; // Change to 4 or more if needed
+        const masonry = document.getElementById('masonry');
+        
+        // Create columns
+        const colDivs = [];
+        for (let i = 0; i < columns; i++) {
+            const col = document.createElement('div');
+            col.className = 'column';
+            masonry.appendChild(col);
+            colDivs.push(col);
+        }
+
+        // Fill columns in horizontal row-wise order
+        imageUrls.forEach((url, index) => {
+            const img = document.createElement('img');
+            img.src = url;
+            colDivs[index % columns].appendChild(img);
+        });
+    </script>
+</body>
+</html>
+""")
+
+def close_media_html(file_path):
+    with open(file_path, "a", encoding="utf-8") as f:
+        f.write("</body></html>")
 
 def log_error(url, error_message):
     with open(ERROR_LOG_FILE, "a", encoding="utf-8") as f:
         f.write(f"{url} - {error_message}\n")
 
+# Make a request with proxy group and fallback
 def make_request(url, proxy_group, max_retries=MAX_RETRIES):
     proxies = proxy_group
     for attempt in range(max_retries):
@@ -145,6 +148,7 @@ def make_request(url, proxy_group, max_retries=MAX_RETRIES):
         except Exception as e:
             logger.warning(f"Failed with {proxies['http']} on attempt {attempt + 1} for {url}: {str(e)}")
             if attempt == max_retries - 1:
+                # Try fallback proxies
                 for fallback_proxy in FALLBACK_PROXIES:
                     try:
                         response = requests.get(url, timeout=10, proxies=fallback_proxy)
@@ -158,14 +162,16 @@ def make_request(url, proxy_group, max_retries=MAX_RETRIES):
             time.sleep(1)
     raise Exception("Request failed after retries")
 
+# Generate search links for a full year
 def generate_year_link(year, username, title_only=False):
     start_date = f"{year}-01-01"
     end_date = f"{year}-12-31"
     url = f"{BASE_URL}/search/39143295/?q={username.replace(' ', '+')}&c[newer_than]={start_date}&c[older_than]={end_date}"
     url += "&c[title_only]=1" if title_only else "&c[title_only]=0"
-    url += "&o=date"  # Newest first
+    url += "&o=date"  # Ensures newest first (Dec 31 to Jan 1)
     return url
 
+# Split URL if pages exceed max_pages
 def split_url(url, start_date, end_date, max_pages=10):
     try:
         start_dt = datetime.strptime(start_date, "%Y-%m-%d")
@@ -189,40 +195,35 @@ def split_url(url, start_date, end_date, max_pages=10):
         log_error(url, f"Split error: {str(e)}")
         return [url]
 
+# Fetch total pages with retry logic
 def fetch_total_pages(url, proxy_group=PROXY_GROUP_1):
     response = make_request(url, proxy_group)
     soup = BeautifulSoup(response.text, 'html.parser')
     pagination = soup.find('div', class_='pageNav')
     return max(int(link.text.strip()) for link in pagination.find_all('a') if link.text.strip().isdigit()) if pagination else 1
 
+# Scrape post links
 def scrape_post_links(search_url, proxy_group=PROXY_GROUP_1):
     response = make_request(search_url, proxy_group)
     soup = BeautifulSoup(response.text, 'html.parser')
     return list(dict.fromkeys(urljoin(BASE_URL, link['href']) for link in soup.find_all('a', href=True) 
                              if 'threads/' in link['href'] and not link['href'].startswith('#') and not 'page-' in link['href']))
 
-def normalize_url(url):
-    parsed = urlparse(url)
-    return parsed.scheme + "://" + parsed.netloc + parsed.path
-
-def add_media(media_url, media_type, year, media_list=None):
-    # Relaxed filtering to only exclude specific unwanted patterns
-    exclude_keywords = ["addonflare/awardsystem/icons/", "ozzmodz_badges_badge", "premium", "likes"]
-    if media_url.startswith("data:image") or any(keyword in media_url.lower() for keyword in exclude_keywords):
-        logger.info(f"Filtered out {media_url} due to exclusion rules")
+# Add media without deduplication, preserving site order
+def add_media(media_url, media_type, year):
+    if media_url.startswith("data:image") or "addonflare/awardsystem/icons/" in media_url or any(keyword in media_url.lower() for keyword in ["avatars", "ozzmodz_badges_badge", "premium", "likes"]):
         return
     media_url = urljoin(BASE_URL, media_url) if media_url.startswith("/") else media_url
     
-    if media_type == "image" and media_list is not None:
-        logger.info(f"Adding image to list: {media_url}")
-        media_list.append(media_url)
+    if media_type == "image":
+        append_to_html(f"{SAVE_DIR}/{year}/images.html", f'<script>imageUrls.push("{media_url}");</script>')
     elif media_type == "video":
         append_to_html(f"{SAVE_DIR}/{year}/videos.html", f'<p><video controls style="max-width:100%;"><source src="{media_url}" type="video/mp4"></video></p>')
     elif media_type == "gif":
-        append_to_html(f"{SAVE_DIR}/{year}/gifs.html", f'<div><img src="{media_url}" alt="GIF" style="max-width:80%;height:auto;"></div>')
-        logger.info(f"Added GIF: {media_url}")
+        append_to_html(f"{SAVE_DIR}/{year}/gifs.html", f'<p><a href="{media_url}" target="_blank">View GIF</a></p>')
 
-def process_post(post_link, year, username, proxy_group, image_list):
+# Process individual post, preserving site order
+def process_post(post_link, year, username, proxy_group):
     try:
         response = make_request(post_link, proxy_group)
         soup = BeautifulSoup(response.text, 'html.parser')
@@ -233,56 +234,43 @@ def process_post(post_link, year, username, proxy_group, image_list):
         articles = [a for a in articles if a and (username_lower in a.get_text(separator=" ").lower() or username_lower in a.get('data-author', '').lower())]
         
         for article in articles:
-            # Extract timestamp from the post
-            time_tag = article.find('time', class_='u-dt')
-            if time_tag and 'datetime' in time_tag.attrs:
-                timestamp = datetime.fromisoformat(time_tag['datetime'].replace('Z', '+00:00'))
-            else:
-                timestamp = datetime.now()  # Fallback if no timestamp found
-                logger.warning(f"No timestamp found for post {post_link}, using current time")
-            
             for media in article.find_all(['img', 'video', 'source', 'a'], recursive=True):
                 if media.name == 'img' and media.get('src'):
                     src = media['src']
-                    if media.get('data-url'):
+                    if media.get('data-url'):  # Handle watermarked images
                         src = media['data-url']
-                    media_type = "gif" if src.lower().endswith(".gif") else "image"
-                    logger.info(f"Found {media_type}: {src} at {timestamp}")
-                    add_media(src, media_type, year, image_list if media_type == "image" else None)
-                    if media_type == "image" and image_list and isinstance(image_list[-1], str):
-                        image_list[-1] = (timestamp, image_list[-1])  # Replace URL with (timestamp, URL) tuple
+                    add_media(src, "gif" if src.endswith(".gif") else "image", year)
                 elif media.name == 'video' and media.get('src'):
-                    logger.info(f"Found video: {media['src']}")
                     add_media(media['src'], "video", year)
                 elif media.name == 'source' and media.get('src'):
-                    logger.info(f"Found video source: {media['src']}")
                     add_media(media['src'], "video", year)
                 elif media.name == 'a' and media.get('href'):
                     href = media['href']
                     if any(href.lower().endswith(ext) for ext in ['.jpg', '.jpeg', '.png', '.gif', '.mp4', '.webm', '.mov']):
-                        media_type = "gif" if href.lower().endswith('.gif') else "image" if href.endswith(('.jpg', '.jpeg', '.png')) else "video"
-                        logger.info(f"Found {media_type} from link: {href} at {timestamp}")
-                        add_media(href, media_type, year, image_list if media_type == "image" else None)
-                        if media_type == "image" and image_list and isinstance(image_list[-1], str):
-                            image_list[-1] = (timestamp, image_list[-1])  # Replace URL with (timestamp, URL) tuple
+                        media_type = "gif" if href.endswith(".gif") else "image" if href.endswith(('.jpg', '.jpeg', '.png')) else "video"
+                        add_media(href, media_type, year)
     except Exception as e:
         log_error(post_link, str(e))
 
+# Process year with proxy groups
 def process_year(year, search_url, username, chat_id):
     year_dir = f"{SAVE_DIR}/{year}"
     os.makedirs(year_dir, exist_ok=True)
     
-    for file_type in ["videos", "gifs"]:
-        init_html(f"{year_dir}/{file_type}.html", f"{year} {file_type.capitalize()} Links")
+    # Initialize images.html with masonry layout
+    init_images_html(f"{year_dir}/images.html", f"{username} - Images Links", year, year)
+    # Initialize videos.html and gifs.html normally
+    init_media_html(f"{year_dir}/videos.html", f"{year} Videos Links")
+    init_media_html(f"{year_dir}/gifs.html", f"{year} GIFs Links")
     
     total_pages = fetch_total_pages(search_url, PROXY_GROUP_1)
     urls_to_process = split_url(search_url, f"{year}-01-01", f"{year}-12-31") if total_pages >= 10 else [search_url]
     
-    executor1 = ThreadPoolExecutor(max_workers=4)
-    executor2 = ThreadPoolExecutor(max_workers=4)
+    # Two executors: 3 workers each
+    executor1 = ThreadPoolExecutor(max_workers=3)  # For PROXY_GROUP_1
+    executor2 = ThreadPoolExecutor(max_workers=3)  # For PROXY_GROUP_2
     futures = []
     total_posts = 0
-    image_list = []  # List of (timestamp, URL) tuples
     
     for url in urls_to_process:
         total_pages = fetch_total_pages(url, PROXY_GROUP_1)
@@ -290,115 +278,129 @@ def process_year(year, search_url, username, chat_id):
             post_links = scrape_post_links(f"{url}&page={page}", PROXY_GROUP_1)
             total_posts += len(post_links)
             half = len(post_links) // 2
+            # Split posts between two groups
             for i, post in enumerate(post_links):
                 proxy_group = PROXY_GROUP_1 if i < half else PROXY_GROUP_2
                 executor = executor1 if i < half else executor2
-                future = executor.submit(process_post, post, year, username, proxy_group, image_list)
+                future = executor.submit(process_post, post, year, username, proxy_group)
                 futures.append(future)
     
+    # Store both executors and futures
     _, _, progress_msg_id = active_tasks[chat_id]
     active_tasks[chat_id] = ((executor1, executor2), futures, progress_msg_id)
     
+    processed_count = 0
     for future in as_completed(futures):
         if chat_id not in active_tasks:
             raise Exception("Task cancelled by user")
         future.result()
+        processed_count += 1
+        if processed_count % 10 == 0 or processed_count == total_posts:
+            bot.edit_message_text(chat_id=chat_id, message_id=progress_msg_id, 
+                                 text=f"🔍 Processing '{username}' ({year}): {processed_count}/{total_posts} posts")
     
-    # Sort by timestamp (newest first) and deduplicate by URL
-    image_list.sort(key=lambda x: x[0], reverse=True)  # Newest first
-    seen_urls = set()
-    unique_image_urls = []
-    for timestamp, url in image_list:
-        normalized_url = normalize_url(url)
-        if normalized_url not in seen_urls:
-            seen_urls.add(normalized_url)
-            unique_image_urls.append(url)
-            logger.info(f"Kept image: {url} with timestamp {timestamp}")
-    
-    init_html(f"{year_dir}/images.html", f"{username} - Images Links ({year}-{year})", unique_image_urls)
-    
-    for file_type in ["videos", "gifs"]:
-        close_html(f"{year_dir}/{file_type}.html")
-        logger.info(f"Closed {year_dir}/{file_type}.html")
+    # Close HTML files
+    close_images_html(f"{year_dir}/images.html")
+    close_media_html(f"{year_dir}/videos.html")
+    close_media_html(f"{year_dir}/gifs.html")
 
-def merge_html_files(file_type, years, merge_dir):
-    if file_type == "images":
-        return None
+# Merge HTML files
+def merge_html_files(file_type, years, merge_dir, username, start_year, end_year):
     merge_file_path = f"{merge_dir}/{file_type}_temp.html"
-    init_html(merge_file_path, f"Merged {file_type.capitalize()} Links")
+    
+    if file_type == "images":
+        init_images_html(merge_file_path, f"{username} - Images Links", start_year, end_year)
+    else:
+        init_media_html(merge_file_path, f"Merged {file_type.capitalize()} Links")
+    
     for year in years:
         year_file_path = f"{SAVE_DIR}/{year}/{file_type}.html"
         if os.path.exists(year_file_path) and os.path.getsize(year_file_path) > 0:
             with open(year_file_path, "r", encoding="utf-8") as f:
                 content = re.search(r'<body>(.*?)</body>', f.read(), re.DOTALL)
                 if content:
-                    append_to_html(merge_file_path, content.group(1))
-                    logger.info(f"Merged {year_file_path} into {merge_file_path}")
-    close_html(merge_file_path)
+                    if file_type == "images":
+                        # Extract only the script tags with image URLs
+                        soup = BeautifulSoup(content.group(1), 'html.parser')
+                        for script in soup.find_all('script'):
+                            if script.string and 'imageUrls.push' in script.string:
+                                append_to_html(merge_file_path, str(script))
+                    else:
+                        append_to_html(merge_file_path, content.group(1))
+    
+    if file_type == "images":
+        close_images_html(merge_file_path)
+    else:
+        close_media_html(merge_file_path)
+    
     return merge_file_path
 
-def deduplicate_html(file_type, temp_file_path, final_file_path):
-    if file_type == "images" or not temp_file_path:
-        return
+# Deduplicate merged file by full src path, preserving order
+def deduplicate_html(file_type, temp_file_path, final_file_path, username, start_year, end_year):
     with open(temp_file_path, "r", encoding="utf-8") as f:
         soup = BeautifulSoup(f.read(), 'html.parser')
     
     seen_urls = set()
     unique_content = []
     
-    for element in soup.body.find_all(recursive=False):
-        url = None
-        if file_type == "videos" and element.name == "p" and element.video and element.video.source:
-            url = normalize_url(element.video.source.get("src"))
-        elif file_type == "gifs" and element.name == "div" and element.img:
-            url = normalize_url(element.img.get("src"))
+    if file_type == "images":
+        # Extract image URLs from script tags
+        scripts = soup.find_all('script')
+        for script in scripts:
+            if script.string and 'imageUrls.push' in script.string:
+                url_match = re.search(r'imageUrls\.push\("(.*?)"\);', script.string)
+                if url_match:
+                    url = url_match.group(1)
+                    if url not in seen_urls:
+                        seen_urls.add(url)
+                        unique_content.append(f'<script>imageUrls.push("{url}");</script>')
         
-        if url and url not in seen_urls:
-            seen_urls.add(url)
-            unique_content.append(str(element))
-            logger.info(f"Kept unique {file_type}: {url}")
+        # Rebuild images.html
+        init_images_html(final_file_path, f"{username} - Images Links", start_year, end_year)
+        for content in unique_content:
+            append_to_html(final_file_path, content)
+        close_images_html(final_file_path)
+    else:
+        # Handle videos and gifs
+        for element in soup.body.find_all(recursive=False):
+            url = None
+            if file_type == "videos" and element.name == "p" and element.video and element.video.source:
+                url = element.video.source.get("src")
+            elif file_type == "gifs" and element.name == "p" and element.a:
+                url = element.a.get("href")
+            
+            if url and url not in seen_urls:
+                seen_urls.add(url)
+                unique_content.append(str(element))
+        
+        # Rebuild videos.html or gifs.html
+        init_media_html(final_file_path, f"Merged {file_type.capitalize()} Links")
+        append_to_html(final_file_path, "\n".join(unique_content))
+        close_media_html(final_file_path)
     
-    init_html(final_file_path, f"Merged {file_type.capitalize()} Links")
-    append_to_html(final_file_path, "\n".join(unique_content))
-    close_html(final_file_path)
     os.remove(temp_file_path)
 
-def send_telegram_message(chat_id, text, max_retries=MAX_RETRIES, **kwargs):
-    for attempt in range(max_retries):
+# Telegram bot utilities
+def send_telegram_message(chat_id, text, **kwargs):
+    for attempt in range(MAX_RETRIES):
         try:
-            response = bot.send_message(chat_id=chat_id, text=text, **kwargs)
-            time.sleep(TELEGRAM_RATE_LIMIT_DELAY)
-            return response
-        except ApiTelegramException as e:
-            if e.error_code == 429:
-                retry_after = int(e.result_json.get('parameters', {}).get('retry_after', 3))
-                logger.warning(f"429 Too Many Requests: retrying after {retry_after} seconds")
-                time.sleep(retry_after)
-                continue
+            return bot.send_message(chat_id=chat_id, text=text, **kwargs)
+        except Exception as e:
             logger.warning(f"Send message attempt {attempt + 1} failed: {str(e)}")
-            if attempt == max_retries - 1:
+            if attempt == MAX_RETRIES - 1:
                 raise
             time.sleep(1 * (attempt + 1))
-    raise Exception("Failed to send message after retries")
 
-def send_telegram_document(chat_id, file_buffer, filename, caption, max_retries=MAX_RETRIES):
-    for attempt in range(max_retries):
+def send_telegram_document(chat_id, file_buffer, filename, caption):
+    for attempt in range(MAX_RETRIES):
         try:
             file_buffer.seek(0)
-            response = bot.send_document(chat_id=chat_id, document=file_buffer, visible_file_name=filename, caption=caption[:1024])
-            time.sleep(TELEGRAM_RATE_LIMIT_DELAY)
-            return response
-        except ApiTelegramException as e:
-            if e.error_code == 429:
-                retry_after = int(e.result_json.get('parameters', {}).get('retry_after', 3))
-                logger.warning(f"429 Too Many Requests: retrying after {retry_after} seconds")
-                time.sleep(retry_after)
-                continue
+            return bot.send_document(chat_id=chat_id, document=file_buffer, visible_file_name=filename, caption=caption[:1024])
+        except Exception as e:
             logger.warning(f"Send document attempt {attempt + 1} failed: {str(e)}")
-            if attempt == max_retries - 1:
+            if attempt == MAX_RETRIES - 1:
                 raise
             time.sleep(1 * (attempt + 1))
-    raise Exception("Failed to send document after retries")
 
 def cancel_task(chat_id):
     if chat_id in active_tasks:
@@ -434,12 +436,12 @@ def telegram_webhook():
             if cancel_task(chat_id):
                 send_telegram_message(chat_id=chat_id, text="✅ Scraping stopped", reply_to_message_id=message_id)
             else:
-                send_telegram_message(chat_id=chat_id, text="ℹ️ No active scraping to stop - 3", reply_to_message_id=message_id)
+                send_telegram_message(chat_id=chat_id, text="ℹ️ No active scraping to stop", reply_to_message_id=message_id)
             return '', 200
 
         parts = text.split()
         if len(parts) < 1 or (parts[0] == '/start' and len(parts) < 2):
-            send_telegram_message(chat_id=chat_id, text="Usage: username [title_only y/n] [start_year] [end_year]\nExample: 'Rakul Preet Singh' n 2023 2025", reply_to_message_id=message_id)
+            send_telegram_message(chat_id=chat_id, text="Usage: username [title_only y/n] [start_year] [end_year]\nExample: 'Akshra Singh' n 2023 2025", reply_to_message_id=message_id)
             return '', 200
 
         if chat_id in active_tasks:
@@ -471,43 +473,23 @@ def telegram_webhook():
 
             any_sent = False
             for file_type in ["images", "videos", "gifs"]:
-                if file_type == "images":
-                    for year in years:
-                        final_file_path = f"{SAVE_DIR}/{year}/images.html"
-                        if os.path.exists(final_file_path) and os.path.getsize(final_file_path) > 0:
-                            with open(final_file_path, 'rb') as f:
-                                html_file = BytesIO(f.read())
-                            html_file.name = f"{username.replace(' ', '_')}_{file_type}_{year}.html"
-                            with open(final_file_path, 'r', encoding='utf-8') as f2:
-                                soup = BeautifulSoup(f2.read(), 'html.parser')
-                                script_tag = soup.find('script')
-                                if script_tag:
-                                    urls_match = re.search(r'const imageUrls = (\[.*?\]);', script_tag.string, re.DOTALL)
-                                    total_items = len(json.loads(urls_match.group(1))) if urls_match else 0
-                                else:
-                                    total_items = 0
-                            send_telegram_document(chat_id, html_file, html_file.name, 
-                                                  f"Found {total_items} {file_type} for '{username}' ({year})")
-                            logger.info(f"Sent {file_type}_{year}.html with {total_items} items")
-                            any_sent = True
-                else:
-                    temp_file_path = merge_html_files(file_type, years, MERGE_DIR)
-                    final_file_path = f"{MERGE_DIR}/{file_type}.html"
-                    deduplicate_html(file_type, temp_file_path, final_file_path)
-                    
-                    if os.path.exists(final_file_path) and os.path.getsize(final_file_path) > 0:
-                        with open(final_file_path, 'rb') as f:
-                            html_file = BytesIO(f.read())
+                temp_file_path = merge_html_files(file_type, years, MERGE_DIR, username, start_year, end_year)
+                final_file_path = f"{MERGE_DIR}/{file_type}.html"
+                deduplicate_html(file_type, temp_file_path, final_file_path, username, start_year, end_year)
+                
+                if os.path.exists(final_file_path) and os.path.getsize(final_file_path) > 0:
+                    with open(final_file_path, 'rb') as f:
+                        html_file = BytesIO(f.read())
                         html_file.name = f"{username.replace(' ', '_')}_{file_type}.html"
                         with open(final_file_path, 'r', encoding='utf-8') as f2:
-                            soup = BeautifulSoup(f2.read(), 'html.parser')
-                            total_items = len(soup.body.find_all(recursive=False)) if soup.body else 0
+                            total_items = len(BeautifulSoup(f2.read(), 'html.parser').body.find_all(recursive=False))
+                            if file_type == "images":
+                                # Count script tags with imageUrls.push
+                                soup = BeautifulSoup(f2.read(), 'html.parser')
+                                total_items = len([s for s in soup.find_all('script') if s.string and 'imageUrls.push' in s.string])
                         send_telegram_document(chat_id, html_file, html_file.name, 
                                               f"Found {total_items} {file_type} for '{username}' ({start_year}-{end_year})")
-                        logger.info(f"Sent {file_type}.html with {total_items} items")
-                        any_sent = True
-                    else:
-                        logger.info(f"No {file_type} found or file empty: {final_file_path}")
+                    any_sent = True
 
             bot.delete_message(chat_id=chat_id, message_id=progress_msg.message_id)
             if not any_sent:
@@ -559,6 +541,7 @@ def set_webhook():
     else:
         logger.error("RAILWAY_PUBLIC_DOMAIN not set")
 
+# Telegram Bot Setup
 try:
     TELEGRAM_BOT_TOKEN = os.environ['TELEGRAM_BOT_TOKEN']
     bot = telebot.TeleBot(TELEGRAM_BOT_TOKEN)
