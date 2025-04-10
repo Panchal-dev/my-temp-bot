@@ -53,7 +53,11 @@ active_tasks = {}
 # HTML initialization with masonry styling for images
 def init_html(file_path, title, image_urls=None):
     if "images.html" in file_path:
-        image_urls_json = json.dumps(image_urls or [])
+        image_urls = image_urls or []
+        if not all(isinstance(url, str) for url in image_urls):
+            logger.error(f"image_urls contains non-string items: {image_urls}")
+            raise ValueError("All image URLs must be strings")
+        image_urls_json = json.dumps(image_urls)
         with open(file_path, "w", encoding="utf-8") as f:
             f.write(f"""<!DOCTYPE html>
 <html>
@@ -427,12 +431,12 @@ def telegram_webhook():
             if cancel_task(chat_id):
                 send_telegram_message(chat_id=chat_id, text="✅ Scraping stopped", reply_to_message_id=message_id)
             else:
-                send_telegram_message(chat_id=chat_id, text="ℹ️ No active scraping to stop -2", reply_to_message_id=message_id)
+                send_telegram_message(chat_id=chat_id, text="ℹ️ No active scraping to stop", reply_to_message_id=message_id)
             return '', 200
 
         parts = text.split()
         if len(parts) < 1 or (parts[0] == '/start' and len(parts) < 2):
-            send_telegram_message(chat_id=chat_id, text="Usage: username [title_only y/n] [start_year] [end_year]\nExample: 'Madhuri Dixit' n 2023 2025", reply_to_message_id=message_id)
+            send_telegram_message(chat_id=chat_id, text="Usage: username [title_only y/n] [start_year] [end_year]\nExample: 'Rakul Preet Singh' n 2023 2025", reply_to_message_id=message_id)
             return '', 200
 
         if chat_id in active_tasks:
@@ -470,18 +474,18 @@ def telegram_webhook():
                         if os.path.exists(final_file_path) and os.path.getsize(final_file_path) > 0:
                             with open(final_file_path, 'rb') as f:
                                 html_file = BytesIO(f.read())
-                                html_file.name = f"{username.replace(' ', '_')}_{file_type}_{year}.html"
-                                with open(final_file_path, 'r', encoding='utf-8') as f2:
-                                    soup = BeautifulSoup(f2.read(), 'html.parser')
-                                    script_tag = soup.find('script')
-                                    if script_tag:
-                                        urls_match = re.search(r'const imageUrls = (\[.*?\]);', script_tag.string, re.DOTALL)
-                                        total_items = len(json.loads(urls_match.group(1))) if urls_match else 0
-                                    else:
-                                        total_items = 0
-                                send_telegram_document(chat_id, html_file, html_file.name, 
-                                                      f"Found {total_items} {file_type} for '{username}' ({year})")
-                                logger.info(f"Sent {file_type}_{year}.html with {total_items} items")
+                            html_file.name = f"{username.replace(' ', '_')}_{file_type}_{year}.html"
+                            with open(final_file_path, 'r', encoding='utf-8') as f2:
+                                soup = BeautifulSoup(f2.read(), 'html.parser')
+                                script_tag = soup.find('script')
+                                if script_tag:
+                                    urls_match = re.search(r'const imageUrls = (\[.*?\]);', script_tag.string, re.DOTALL)
+                                    total_items = len(json.loads(urls_match.group(1))) if urls_match else 0
+                                else:
+                                    total_items = 0
+                            send_telegram_document(chat_id, html_file, html_file.name, 
+                                                  f"Found {total_items} {file_type} for '{username}' ({year})")
+                            logger.info(f"Sent {file_type}_{year}.html with {total_items} items")
                             any_sent = True
                 else:
                     temp_file_path = merge_html_files(file_type, years, MERGE_DIR)
@@ -491,13 +495,13 @@ def telegram_webhook():
                     if os.path.exists(final_file_path) and os.path.getsize(final_file_path) > 0:
                         with open(final_file_path, 'rb') as f:
                             html_file = BytesIO(f.read())
-                            html_file.name = f"{username.replace(' ', '_')}_{file_type}.html"
-                            with open(final_file_path, 'r', encoding='utf-8') as f2:
-                                soup = BeautifulSoup(f2.read(), 'html.parser')
-                                total_items = len(soup.body.find_all(recursive=False)) if soup.body else 0
-                            send_telegram_document(chat_id, html_file, html_file.name, 
-                                                  f"Found {total_items} {file_type} for '{username}' ({start_year}-{end_year})")
-                            logger.info(f"Sent {file_type}.html with {total_items} items")
+                        html_file.name = f"{username.replace(' ', '_')}_{file_type}.html"
+                        with open(final_file_path, 'r', encoding='utf-8') as f2:
+                            soup = BeautifulSoup(f2.read(), 'html.parser')
+                            total_items = len(soup.body.find_all(recursive=False)) if soup.body else 0
+                        send_telegram_document(chat_id, html_file, html_file.name, 
+                                              f"Found {total_items} {file_type} for '{username}' ({start_year}-{end_year})")
+                        logger.info(f"Sent {file_type}.html with {total_items} items")
                         any_sent = True
                     else:
                         logger.info(f"No {file_type} found or file empty: {final_file_path}")
@@ -518,7 +522,7 @@ def telegram_webhook():
                 if executor2:
                     executor2.shutdown(wait=False)
                 del active_tasks[chat_id]
-            shutil.rmtree(SAVE_DIR, ignore_errors=True)
+            shutil.rmtree(SAVE_DIR, exist_ok=True)
 
         return '', 200
     
