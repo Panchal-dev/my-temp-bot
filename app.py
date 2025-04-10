@@ -348,7 +348,7 @@ def telegram_webhook():
             return '', 200
 
         chat_id = update['message']['chat']['id']
-        message_id = update['message'].getolly('message_id')
+        message_id = update['message'].get('message_id')  # Fixed typo: getolly -> get
         text = update['message'].get('text', '').strip()
 
         if chat_id not in ALLOWED_CHAT_IDS:
