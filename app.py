@@ -47,54 +47,57 @@ FALLBACK_PROXIES = [
 ALLOWED_CHAT_IDS = {5809601894, 1285451259}
 active_tasks = {}
 
+# HTML initialization with Pinterest-style masonry for images
 def init_html(file_path, title):
     if "images.html" in file_path:
         with open(file_path, "w", encoding="utf-8") as f:
             f.write(f"""<!DOCTYPE html>
-<html>
+<html lang="en">
 <head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>{title}</title>
     <style>
-        .grid-container {{
+        * {{
+            box-sizing: border-box;
+            margin: 0;
+        }}
+        .masonry-container {{
             display: grid;
-            grid-template-columns: repeat(3, 1fr); /* Exactly 3 columns, equal width */
-            gap: 10px; /* Space between grid items */
-            padding: 10px;
+            padding: 20px;
+            gap: 10px;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            grid-auto-rows: 10px; /* Small row height for dynamic spanning */
+            grid-auto-flow: dense; /* Fill gaps */
         }}
-        .grid-item {{
-            width: 100%; /* Fill column width */
+        .masonry-item {{
+            grid-row: auto / span 20; /* Default span, adjusted dynamically by content */
         }}
-        .grid-item img {{
-            width: 100%; /* Fill item width */
-            height: auto; /* Maintain aspect ratio */
-            display: block; /* Remove extra space */
-            border-radius: 8px; /* Rounded corners */
+        .masonry-item img {{
+            width: 100%;
+            height: auto;
+            display: block;
+            border-radius: 8px;
         }}
         @media (max-width: 600px) {{
-            .grid-container {{
-                grid-template-columns: repeat(3, 1fr); /* Still 3 columns, but narrower */
-            }}
-            .grid-item {{
-                width: 100%; /* Adjust to narrower columns */
+            .masonry-container {{
+                grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
             }}
         }}
         @media (max-width: 400px) {{
-            .grid-container {{
-                grid-template-columns: repeat(3, 1fr); /* Still 3 columns */
-            }}
-            .grid-item {{
-                width: 100%; /* Full width within narrow columns */
+            .masonry-container {{
+                grid-template-columns: 1fr; /* Single column on small screens */
             }}
         }}
     </style>
 </head>
 <body>
-    <div class="grid-container">
+    <div class="masonry-container">
 """)
     else:
         with open(file_path, "w", encoding="utf-8") as f:
             f.write(f"""<!DOCTYPE html><html><head><title>{title}</title></head><body>""")
-            
+
 def append_to_html(file_path, content):
     with open(file_path, "a", encoding="utf-8") as f:
         f.write(content)
