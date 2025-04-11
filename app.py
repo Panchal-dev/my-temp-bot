@@ -29,10 +29,9 @@ SAVE_DIR = "HTML_Pages"
 MERGE_DIR = "Merge"
 ERROR_LOG_FILE = os.path.join(MERGE_DIR, "error.txt")
 MAX_RETRIES = 3
-MAX_WORKERS = 10  # 5 for PROXY_GROUP_1, 5 for PROXY_GROUP_2
-TELEGRAM_RATE_LIMIT_DELAY = 2  # Seconds between Telegram API calls
+MAX_WORKERS = 6  # 5 for PROXY_GROUP_1, 5 for PROXY_GROUP_2
+TELEGRAM_RATE_LIMIT_DELAY = 0  # Seconds between Telegram API calls
 
-# Proxy configuration
 # Proxy configuration
 PROXY_GROUP_1 = {"http": "http://45.140.143.77:18080", "https": "http://45.140.143.77:18080"}
 PROXY_GROUP_2 = {"http": "http://42.114.11.82:8080", "https": "http://42.114.11.82:8080"}
@@ -119,7 +118,8 @@ def init_html(file_path, title, media_urls=None):
         mediaUrls.forEach((url, index) => {{
             const img = document.createElement('img');
             img.src = url;
-            colDivs[index % columns].appendChild(img);
+            const colIndex = Math.floor(index / (Math.ceil(mediaUrls.length / columns)));
+            colDivs[colIndex % columns].appendChild(img);
         }});
     </script>
 </body>
@@ -214,7 +214,7 @@ def normalize_url(url):
     return parsed.scheme + "://" + parsed.netloc + parsed.path
 
 def add_media(media_url, media_type, year, media_list=None):
-    exclude_keywords = ["addonflare/awardsystem/icons/", "ozzmodz_badges_badge", "premium", "likes", "avatars"]
+    exclude_keywords = ["addonflare/awardsystem/icons/", "ozzmodz_badges_badge", "premium", "likes"]
     if media_url.startswith("data:image") or any(keyword in media_url.lower() for keyword in exclude_keywords):
         logger.info(f"Filtered out {media_url} due to exclusion rules")
         return
@@ -270,8 +270,8 @@ def process_year(year, search_url, username, chat_id):
     total_pages = fetch_total_pages(search_url, PROXY_GROUP_1)
     urls_to_process = split_url(search_url, f"{year}-01-01", f"{year}-12-31") if total_pages >= 10 else [search_url]
     
-    executor1 = ThreadPoolExecutor(max_workers=5)
-    executor2 = ThreadPoolExecutor(max_workers=5)
+    executor1 = ThreadPoolExecutor(max_workers=3)
+    executor2 = ThreadPoolExecutor(max_workers=3)
     futures = []
     image_list = []  # List of URLs in original order
     gif_list = []    # List of URLs in original order
@@ -431,7 +431,7 @@ def telegram_webhook():
             if cancel_task(chat_id):
                 send_telegram_message(chat_id=chat_id, text="✅ Scraping stopped", reply_to_message_id=message_id)
             else:
-                send_telegram_message(chat_id=chat_id, text="ℹ️ No active scraping to stop --100", reply_to_message_id=message_id)
+                send_telegram_message(chat_id=chat_id, text="ℹ️ No active scraping to stop", reply_to_message_id=message_id)
             return '', 200
 
         parts = text.split()
