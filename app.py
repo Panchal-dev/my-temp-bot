@@ -29,7 +29,7 @@ SAVE_DIR = "HTML_Pages"
 MERGE_DIR = "Merge"
 ERROR_LOG_FILE = os.path.join(MERGE_DIR, "error.txt")
 MAX_RETRIES = 3
-MAX_WORKERS = 10  # 4 for PROXY_GROUP_1, 4 for PROXY_GROUP_2
+MAX_WORKERS = 10  # 5 for PROXY_GROUP_1, 5 for PROXY_GROUP_2
 TELEGRAM_RATE_LIMIT_DELAY = 2  # Seconds between Telegram API calls
 
 # Proxy configuration
@@ -69,6 +69,8 @@ def init_html(file_path, title, media_urls=None):
         body {{
             font-family: Arial, sans-serif;
             margin: 20px;
+            background-color: black;
+            color: white;
         }}
         h1 {{
             text-align: center;
@@ -120,7 +122,7 @@ def init_html(file_path, title, media_urls=None):
 </html>""")
     else:
         with open(file_path, "w", encoding="utf-8") as f:
-            f.write(f"""<!DOCTYPE html><html><head><title>{title}</title></head><body>""")
+            f.write(f"""<!DOCTYPE html><html><head><title>{title}</title></head><body style="background-color: black; color: white;">""")
 
 def append_to_html(file_path, content):
     with open(file_path, "a", encoding="utf-8") as f:
@@ -208,7 +210,6 @@ def normalize_url(url):
     return parsed.scheme + "://" + parsed.netloc + parsed.path
 
 def add_media(media_url, media_type, year, media_list=None):
-    # Relaxed filtering to only exclude specific unwanted patterns
     exclude_keywords = ["addonflare/awardsystem/icons/", "ozzmodz_badges_badge", "premium", "likes"]
     if media_url.startswith("data:image") or any(keyword in media_url.lower() for keyword in exclude_keywords):
         logger.info(f"Filtered out {media_url} due to exclusion rules")
@@ -232,26 +233,14 @@ def process_post(post_link, year, username, proxy_group, image_list, gif_list):
         articles = [a for a in articles if a and (username_lower in a.get_text(separator=" ").lower() or username_lower in a.get('data-author', '').lower())]
         
         for article in articles:
-            # Extract timestamp from the post
-            time_tag = article.find('time', class_='u-dt')
-            if time_tag and 'datetime' in time_tag.attrs:
-                timestamp = datetime.fromisoformat(time_tag['datetime'].replace('Z', '+00:00'))
-            else:
-                timestamp = datetime.now()  # Fallback if no timestamp found
-                logger.warning(f"No timestamp found for post {post_link}, using current time")
-            
             for media in article.find_all(['img', 'video', 'source', 'a'], recursive=True):
                 if media.name == 'img' and media.get('src'):
                     src = media['src']
                     if media.get('data-url'):
                         src = media['data-url']
                     media_type = "gif" if src.lower().endswith(".gif") else "image"
-                    logger.info(f"Found {media_type}: {src} at {timestamp}")
+                    logger.info(f"Found {media_type}: {src}")
                     add_media(src, media_type, year, gif_list if media_type == "gif" else image_list)
-                    if media_type == "image" and image_list and isinstance(image_list[-1], str):
-                        image_list[-1] = (timestamp, image_list[-1])  # Replace URL with (timestamp, URL) tuple
-                    elif media_type == "gif" and gif_list and isinstance(gif_list[-1], str):
-                        gif_list[-1] = (timestamp, gif_list[-1])  # Replace URL with (timestamp, URL) tuple
                 elif media.name == 'video' and media.get('src'):
                     logger.info(f"Found video: {media['src']}")
                     add_media(media['src'], "video", year)
@@ -262,12 +251,8 @@ def process_post(post_link, year, username, proxy_group, image_list, gif_list):
                     href = media['href']
                     if any(href.lower().endswith(ext) for ext in ['.jpg', '.jpeg', '.png', '.gif', '.mp4', '.webm', '.mov']):
                         media_type = "gif" if href.lower().endswith('.gif') else "image" if href.endswith(('.jpg', '.jpeg', '.png')) else "video"
-                        logger.info(f"Found {media_type} from link: {href} at {timestamp}")
+                        logger.info(f"Found {media_type} from link: {href}")
                         add_media(href, media_type, year, gif_list if media_type == "gif" else image_list)
-                        if media_type == "image" and image_list and isinstance(image_list[-1], str):
-                            image_list[-1] = (timestamp, image_list[-1])  # Replace URL with (timestamp, URL) tuple
-                        elif media_type == "gif" and gif_list and isinstance(gif_list[-1], str):
-                            gif_list[-1] = (timestamp, gif_list[-1])  # Replace URL with (timestamp, URL) tuple
     except Exception as e:
         log_error(post_link, str(e))
 
@@ -284,19 +269,16 @@ def process_year(year, search_url, username, chat_id):
     executor1 = ThreadPoolExecutor(max_workers=5)
     executor2 = ThreadPoolExecutor(max_workers=5)
     futures = []
-    total_posts = 0
-    image_list = []  # List of (timestamp, URL) tuples
-    gif_list = []    # List of (timestamp, URL) tuples
+    image_list = []  # List of URLs in original order
+    gif_list = []    # List of URLs in original order
     
     for url in urls_to_process:
         total_pages = fetch_total_pages(url, PROXY_GROUP_1)
-        for page in range(total_pages, 0, -1):
+        for page in range(total_pages, 0, -1):  # Newest to oldest
             post_links = scrape_post_links(f"{url}&page={page}", PROXY_GROUP_1)
-            total_posts += len(post_links)
-            half = len(post_links) // 2
             for i, post in enumerate(post_links):
-                proxy_group = PROXY_GROUP_1 if i < half else PROXY_GROUP_2
-                executor = executor1 if i < half else executor2
+                proxy_group = PROXY_GROUP_1 if i < len(post_links) // 2 else PROXY_GROUP_2
+                executor = executor1 if i < len(post_links) // 2 else executor2
                 future = executor.submit(process_post, post, year, username, proxy_group, image_list, gif_list)
                 futures.append(future)
     
@@ -308,26 +290,24 @@ def process_year(year, search_url, username, chat_id):
             raise Exception("Task cancelled by user")
         future.result()
     
-    # Sort by timestamp (newest first) and deduplicate by URL
-    image_list.sort(key=lambda x: x[0], reverse=True)  # Newest first
+    # Deduplicate while preserving order
     seen_urls = set()
     unique_image_urls = []
-    for timestamp, url in image_list:
+    for url in image_list:
         normalized_url = normalize_url(url)
         if normalized_url not in seen_urls:
             seen_urls.add(normalized_url)
             unique_image_urls.append(url)
-            logger.info(f"Kept image: {url} with timestamp {timestamp}")
+            logger.info(f"Kept image: {url}")
     
-    gif_list.sort(key=lambda x: x[0], reverse=True)  # Newest first
     seen_urls = set()
     unique_gif_urls = []
-    for timestamp, url in gif_list:
+    for url in gif_list:
         normalized_url = normalize_url(url)
         if normalized_url not in seen_urls:
             seen_urls.add(normalized_url)
             unique_gif_urls.append(url)
-            logger.info(f"Kept GIF: {url} with timestamp {timestamp}")
+            logger.info(f"Kept GIF: {url}")
     
     init_html(f"{year_dir}/images.html", f"{username} - Images Links ({year}-{year})", unique_image_urls)
     init_html(f"{year_dir}/gifs.html", f"{username} - GIFs Links ({year}-{year})", unique_gif_urls)
@@ -447,7 +427,7 @@ def telegram_webhook():
             if cancel_task(chat_id):
                 send_telegram_message(chat_id=chat_id, text="✅ Scraping stopped", reply_to_message_id=message_id)
             else:
-                send_telegram_message(chat_id=chat_id, text="ℹ️ No active scraping to stop", reply_to_message_id=message_id)
+                send_telegram_message(chat_id=chat_id, text="ℹ️ No active scraping to stop --1", reply_to_message_id=message_id)
             return '', 200
 
         parts = text.split()
