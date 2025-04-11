@@ -33,6 +33,7 @@ MAX_WORKERS = 10  # 5 for PROXY_GROUP_1, 5 for PROXY_GROUP_2
 TELEGRAM_RATE_LIMIT_DELAY = 2  # Seconds between Telegram API calls
 
 # Proxy configuration
+# Proxy configuration
 PROXY_GROUP_1 = {"http": "http://52.221.180.97:8080", "https": "http://52.221.180.97:8080"}
 PROXY_GROUP_2 = {"http": "http://188.166.230.109:31028", "https": "http://188.166.230.109:31028"}
 FALLBACK_PROXIES = [
@@ -134,8 +135,7 @@ def init_html(file_path, title, media_urls=None):
         mediaUrls.forEach((url, index) => {{
             const img = document.createElement('img');
             img.src = url;
-            const colIndex = Math.floor(index / (Math.ceil(mediaUrls.length / columns)));
-            colDivs[colIndex % columns].appendChild(img);
+            colDivs[index % columns].appendChild(img);
         }});
     </script>
 </body>
@@ -447,7 +447,7 @@ def telegram_webhook():
             if cancel_task(chat_id):
                 send_telegram_message(chat_id=chat_id, text="✅ Scraping stopped", reply_to_message_id=message_id)
             else:
-                send_telegram_message(chat_id=chat_id, text="ℹ️ No active scraping to stop --1", reply_to_message_id=message_id)
+                send_telegram_message(chat_id=chat_id, text="ℹ️ No active scraping to stop --10", reply_to_message_id=message_id)
             return '', 200
 
         parts = text.split()
