@@ -34,37 +34,21 @@ TELEGRAM_RATE_LIMIT_DELAY = 2  # Seconds between Telegram API calls
 
 # Proxy configuration
 # Proxy configuration
-PROXY_GROUP_1 = {"http": "http://52.221.180.97:8080", "https": "http://52.221.180.97:8080"}
-PROXY_GROUP_2 = {"http": "http://188.166.230.109:31028", "https": "http://188.166.230.109:31028"}
+PROXY_GROUP_1 = {"http": "http://45.140.143.77:18080", "https": "http://45.140.143.77:18080"}
+PROXY_GROUP_2 = {"http": "http://42.114.11.82:8080", "https": "http://42.114.11.82:8080"}
 FALLBACK_PROXIES = [
     {"http": "http://45.140.143.77:18080", "https": "http://45.140.143.77:18080"},
     {"http": "http://45.140.143.77:18080", "https": "http://45.140.143.77:18080"},
-    {"http": "http://51.195.119.226:28003", "https": "http://51.195.119.226:28003"},
-    {"http": "http://43.135.137.249:13001", "https": "http://43.135.137.249:13001"},
-    {"http": "http://43.159.144.69:13001", "https": "http://43.159.144.69:13001"},
-    {"http": "http://43.159.152.237:13001", "https": "http://43.159.152.237:13001"},
-    {"http": "http://43.153.25.42:13001", "https": "http://43.153.25.42:13001"},
-    {"http": "http://170.106.186.103:13001", "https": "http://170.106.186.103:13001"},
-    {"http": "http://43.153.46.29:13001", "https": "http://43.153.46.29:13001"},
-    {"http": "http://43.135.129.37:13001", "https": "http://43.135.129.37:13001"},
-    {"http": "http://43.135.186.62:13001", "https": "http://43.135.186.62:13001"},
-    {"http": "http://49.51.198.19:13001", "https": "http://49.51.198.19:13001"},
-    {"http": "http://67.43.236.18:21365", "https": "http://67.43.236.18:21365"},
-    {"http": "http://43.159.130.175:13001", "https": "http://43.159.130.175:13001"},
-    {"http": "http://49.51.206.38:13001", "https": "http://49.51.206.38:13001"},
-    {"http": "http://170.106.198.41:13001", "https": "http://170.106.198.41:13001"},
-    {"http": "http://72.10.160.91:6991", "https": "http://72.10.160.91:6991"},
-    {"http": "http://170.106.171.100:13001", "https": "http://170.106.171.100:13001"},
-    {"http": "http://43.135.158.192:13001", "https": "http://43.135.158.192:13001"},
-    {"http": "http://43.153.103.58:13001", "https": "http://43.153.103.58:13001"},
-    {"http": "http://43.152.72.76:13001", "https": "http://43.152.72.76:13001"},
-    {"http": "http://219.135.229.196:7890", "https": "http://219.135.229.196:7890"},
+    {"http": "http://45.140.143.77:18080", "https": "http://45.140.143.77:18080"},
+    {"http": "http://45.140.143.77:18080", "https": "http://45.140.143.77:18080"},
+    {"http": "http://45.140.143.77:18080", "https": "http://45.140.143.77:18080"},
+    {"http": "http://34.143.143.61:7777", "https": "http://34.143.143.61:7777"},
+    {"http": "http://171.240.118.170:5134", "https": "http://171.240.118.170:5134"},
     {"http": "http://15.235.9.224:28003", "https": "http://15.235.9.224:28003"},
-    {"http": "http://43.153.113.65:13001", "https": "http://43.153.113.65:13001"},
-    {"http": "http://43.153.16.91:13001", "https": "http://43.153.16.91:13001"},
-    {"http": "http://14.241.80.37:8080", "https": "http://14.241.80.37:8080"},
-    {"http": "http://43.135.150.45:13001", "https": "http://43.135.150.45:13001"},
-    {"http": "http://185.229.241.132:8880", "https": "http://185.229.241.132:8880"},
+    {"http": "http://171.240.118.170:5134", "https": "http://171.240.118.170:5134"},
+    {"http": "http://219.135.229.196:7890", "https": "http://219.135.229.196:7890"},
+    {"http": "http://219.135.229.196:7890", "https": "http://219.135.229.196:7890"},
+    {"http": "http://219.135.229.196:7890", "https": "http://219.135.229.196:7890"},
     {"http": "http://34.143.143.61:7777", "https": "http://34.143.143.61:7777"}
 ]
 
@@ -230,7 +214,7 @@ def normalize_url(url):
     return parsed.scheme + "://" + parsed.netloc + parsed.path
 
 def add_media(media_url, media_type, year, media_list=None):
-    exclude_keywords = ["addonflare/awardsystem/icons/", "ozzmodz_badges_badge", "premium", "likes"]
+    exclude_keywords = ["addonflare/awardsystem/icons/", "ozzmodz_badges_badge", "premium", "likes", "avatars"]
     if media_url.startswith("data:image") or any(keyword in media_url.lower() for keyword in exclude_keywords):
         logger.info(f"Filtered out {media_url} due to exclusion rules")
         return
