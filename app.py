@@ -50,7 +50,7 @@ ALLOWED_CHAT_IDS = {5809601894, 1285451259}
 active_tasks = {}
 page_cache = {}  # Cache for total pages
 
-# HTML initialization with masonry styling for images
+# HTML initialization with masonry styling for images and year-wise formatting
 def init_html(file_path, title, image_urls=None):
     if "images.html" in file_path:
         image_urls = image_urls or []
@@ -74,10 +74,16 @@ def init_html(file_path, title, image_urls=None):
         h1 {{
             text-align: center;
         }}
+        h2 {{
+            text-align: center;
+            margin: 20px 0 10px;
+            color: #ddd;
+        }}
         .masonry-container {{
             display: flex;
             gap: 15px;
             justify-content: center;
+            margin-bottom: 20px;
         }}
         .column {{
             display: flex;
@@ -90,29 +96,44 @@ def init_html(file_path, title, image_urls=None):
             display: block;
             border-radius: 6px;
         }}
+        .year-2025 img {{ border: 2px solid #1e90ff; }}
+        .year-2024 img {{ border: 2px solid #32cd32; }}
+        .year-2023 img {{ border: 2px solid #ff4500; }}
     </style>
 </head>
 <body>
     <h1>{title}</h1>
-    <div class="masonry-container" id="masonry"></div>
+    <div id="masonry"></div>
 
     <script>
         const imageUrls = {image_urls_json};
-
         const columns = 3;
         const masonry = document.getElementById('masonry');
+        let currentYear = null;
 
         const colDivs = [];
         for (let i = 0; i < columns; i++) {{
             const col = document.createElement('div');
             col.className = 'column';
-            masonry.appendChild(col);
             colDivs.push(col);
         }}
 
-        imageUrls.forEach((url, index) => {{
+        imageUrls.forEach((entry, index) => {{
+            const [year, url] = entry.split('|');
+            if (year !== currentYear) {{
+                const heading = document.createElement('h2');
+                heading.textContent = year;
+                masonry.appendChild(heading);
+                const container = document.createElement('div');
+                container.className = 'masonry-container';
+                colDivs.forEach(col => container.appendChild(col.cloneNode()));
+                masonry.appendChild(container);
+                colDivs.forEach(col => col.innerHTML = '');
+                currentYear = year;
+            }}
             const img = document.createElement('img');
             img.src = url;
+            img.className = 'year-' + year;
             colDivs[index % columns].appendChild(img);
         }});
     </script>
@@ -120,7 +141,44 @@ def init_html(file_path, title, image_urls=None):
 </html>""")
     else:
         with open(file_path, "w", encoding="utf-8") as f:
-            f.write(f"""<!DOCTYPE html><html><head><title>{title}</title></head><body>""")
+            f.write(f"""<!DOCTYPE html>
+<html>
+<head>
+    <title>{title}</title>
+    <meta charset="UTF-8">
+    <style>
+        body {{
+            font-family: Arial, sans-serif;
+            margin: 20px;
+            background-color: black;
+            color: white;
+        }}
+        h1 {{
+            text-align: center;
+        }}
+        h2 {{
+            text-align: center;
+            margin: 20px 0 10px;
+            color: #ddd;
+        }}
+        .media-container {{
+            margin-bottom: 20px;
+        }}
+        .year-2025 {{ background-color: #1e1e3f; padding: 10px; border-radius: 6px; }}
+        .year-2024 {{ background-color: #1e3f1e; padding: 10px; border-radius: 6px; }}
+        .year-2023 {{ background-color: #3f1e1e; padding: 10px; border-radius: 6px; }}
+        video, img {{
+            max-width: 80%;
+            height: auto;
+            display: block;
+            margin: 0 auto;
+            border-radius: 6px;
+        }}
+    </style>
+</head>
+<body>
+    <h1>{title}</h1>
+""")
 
 def append_to_html(file_path, content):
     with open(file_path, "a", encoding="utf-8") as f:
@@ -223,10 +281,10 @@ def add_media(media_url, media_type, year, image_list=None, video_list=None, gif
         image_list.append((timestamp, media_url))
     elif media_type == "video" and video_list is not None:
         logger.info(f"Adding video: {media_url} at {timestamp}")
-        video_list.append((timestamp, f'<p><video controls style="max-width:100%;"><source src="{media_url}" type="video/mp4"></video></p>'))
+        video_list.append((timestamp, f'<div class="media-container year-{year}"><p><video controls style="max-width:100%;"><source src="{media_url}" type="video/mp4"></video></p></div>'))
     elif media_type == "gif" and gif_list is not None:
-        logger.info(f"Added GIF: {media_url} at {timestamp}")
-        gif_list.append((timestamp, f'<div><img src="{media_url}" alt="GIF" style="max-width:80%;height:auto;"></div>'))
+        logger.info(f"Adding GIF: {media_url} at {timestamp}")
+        gif_list.append((timestamp, f'<div class="media-container year-{year}"><img src="{media_url}" alt="GIF" style="max-width:80%;height:auto;"></div>'))
 
 def process_post(post_link, year, username, proxy_group, image_list, video_list, gif_list):
     try:
@@ -317,10 +375,11 @@ def merge_and_deduplicate(file_type, media_list, merge_dir, username, start_year
     # Sort by timestamp (newest first)
     media_list.sort(key=lambda x: x[0], reverse=True)
     
-    # Deduplicate, keeping newest instance
+    # Group by year and deduplicate
+    year_groups = {}
     seen_urls = set()
-    unique_media = []
     for timestamp, content in media_list:
+        year = timestamp.year
         url = content
         if file_type != "images":
             # Extract URL from HTML
@@ -332,20 +391,29 @@ def merge_and_deduplicate(file_type, media_list, merge_dir, username, start_year
         normalized_url = normalize_url(url)
         if normalized_url not in seen_urls:
             seen_urls.add(normalized_url)
-            unique_media.append((timestamp, content))
+            if year not in year_groups:
+                year_groups[year] = []
+            year_groups[year].append((timestamp, content))
             logger.info(f"Kept {file_type}: {url} with timestamp {timestamp}")
     
-    if not unique_media:
+    if not year_groups:
         logger.info(f"No unique {file_type} after deduplication")
         return None
     
     final_file_path = f"{merge_dir}/{file_type}.html"
     if file_type == "images":
-        init_html(final_file_path, f"{username} - Images Links", [url for _, url in unique_media])
+        # Format image URLs with year for JavaScript
+        image_urls = []
+        for year in sorted(year_groups.keys(), reverse=True):
+            for _, content in year_groups[year]:
+                image_urls.append(f"{year}|{content}")
+        init_html(final_file_path, f"{username} - Images Links", image_urls)
     else:
         init_html(final_file_path, f"Merged {file_type.capitalize()} Links")
-        for _, content in unique_media:
-            append_to_html(final_file_path, content)
+        for year in sorted(year_groups.keys(), reverse=True):
+            append_to_html(final_file_path, f'<h2>{year}</h2>')
+            for _, content in year_groups[year]:
+                append_to_html(final_file_path, content)
         close_html(final_file_path)
     
     return final_file_path
@@ -463,6 +531,7 @@ def telegram_webhook():
 
             any_sent = False
             for file_type, media_list in [("images", image_list), ("videos", video_list), ("gifs", gif_list)]:
+                logger.info(f"Processing {file_type} with {len(media_list)} items before deduplication")
                 final_file_path = merge_and_deduplicate(file_type, media_list, MERGE_DIR, username, start_year, end_year)
                 
                 if final_file_path and os.path.exists(final_file_path) and os.path.getsize(final_file_path) > 0:
@@ -475,7 +544,7 @@ def telegram_webhook():
                             script_tag = soup.find('script')
                             total_items = len(json.loads(re.search(r'const imageUrls = (\[.*?\]);', script_tag.string, re.DOTALL).group(1))) if script_tag else 0
                         else:
-                            total_items = len(soup.body.find_all(recursive=False)) if soup.body else 0
+                            total_items = len([e for e in soup.body.find_all(recursive=False) if e.name != 'h2']) if soup.body else 0
                     send_telegram_document(chat_id, html_file, html_file.name, 
                                           f"Found {total_items} {file_type} for '{username}' ({start_year}-{end_year})")
                     logger.info(f"Sent {file_type}.html with {total_items} items")
