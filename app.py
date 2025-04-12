@@ -123,8 +123,10 @@ def close_html(file_path):
             f.write("</body></html>")
 
 def log_error(url, error_message):
+    os.makedirs(os.path.dirname(ERROR_LOG_FILE), exist_ok=True)
     with open(ERROR_LOG_FILE, "a", encoding="utf-8") as f:
         f.write(f"{url} - {error_message}\n")
+        logger.info(f"Logged error for {url}: {error_message}")
 
 def make_request(url, proxy_group, max_retries=MAX_RETRIES):
     proxies = proxy_group
@@ -155,6 +157,7 @@ def generate_year_link(year, username, title_only=False):
     url = f"{BASE_URL}/search/39143295/?q={username.replace(' ', '+')}&c[newer_than]={start_date}&c[older_than]={end_date}"
     url += "&c[title_only]=1" if title_only else "&c[title_only]=0"
     url += "&o=date"
+    logger.info(f"Generated search URL for {year}: {url}")
     return url
 
 def split_url(url, start_date, end_date, max_pages=10):
@@ -163,6 +166,7 @@ def split_url(url, start_date, end_date, max_pages=10):
         start_dt = datetime.strptime(start_date, "%Y-%m-%d")
         end_dt = datetime.strptime(end_date, "%Y-%m-%d")
         total_pages = fetch_total_pages(url)
+        logger.info(f"Total pages for {url}: {total_pages}")
         if total_pages < max_pages:
             return [url]
         total_days = (end_dt - start_dt).days
@@ -176,25 +180,38 @@ def split_url(url, start_date, end_date, max_pages=10):
         return split_url(first_url, first_range[0], first_range[1]) + split_url(second_url, second_range[0], second_range[1])
     except Exception as e:
         log_error(url, f"Split error: {str(e)}")
+        logger.error(f"Split error for {url}: {str(e)}")
         return [url]
 
 def fetch_total_pages(url, proxy_group=PROXY_GROUP_1):
     if url in page_cache:
+        logger.info(f"Using cached total pages for {url}: {page_cache[url]}")
         return page_cache[url]
-    response = make_request(url, proxy_group)
-    soup = BeautifulSoup(response.text, 'html.parser')
-    pagination = soup.find('div', class_='pageNav')
-    total_pages = max(int(link.text.strip()) for link in pagination.find_all('a') if link.text.strip().isdigit()) if pagination else 1
-    page_cache[url] = total_pages
-    return total_pages
+    try:
+        response = make_request(url, proxy_group)
+        soup = BeautifulSoup(response.text, 'html.parser')
+        pagination = soup.find('div', class_='pageNav')
+        total_pages = max(int(link.text.strip()) for link in pagination.find_all('a') if link.text.strip().isdigit()) if pagination else 1
+        page_cache[url] = total_pages
+        logger.info(f"Fetched total pages for {url}: {total_pages}")
+        return total_pages
+    except Exception as e:
+        log_error(url, f"Fetch total pages error: {str(e)}")
+        logger.error(f"Error fetching total pages for {url}: {str(e)}")
+        return 1
 
 def scrape_post_links(search_url, proxy_group=PROXY_GROUP_1):
-    response = make_request(search_url, proxy_group)
-    soup = BeautifulSoup(response.text, 'html.parser')
-    links = list(dict.fromkeys(urljoin(BASE_URL, link['href']) for link in soup.find_all('a', href=True)
-                             if 'threads/' in link['href'] and not link['href'].startswith('#') and not 'page-' in link['href']))
-    logger.info(f"Found {len(links)} post links for {search_url}")
-    return links
+    try:
+        response = make_request(search_url, proxy_group)
+        soup = BeautifulSoup(response.text, 'html.parser')
+        links = list(dict.fromkeys(urljoin(BASE_URL, link['href']) for link in soup.find_all('a', href=True)
+                                   if 'threads/' in link['href'] and not link['href'].startswith('#') and not 'page-' in link['href']))
+        logger.info(f"Found {len(links)} post links for {search_url}")
+        return links
+    except Exception as e:
+        log_error(search_url, f"Scrape post links error: {str(e)}")
+        logger.error(f"Error scraping post links for {search_url}: {str(e)}")
+        return []
 
 def add_media(media_url, media_type, year, image_list=None, video_list=None, gif_list=None, seen_urls=None):
     exclude_keywords = ["addonflare/awardsystem/icons/", "ozzmodz_badges_badge/", "avatars/"]
@@ -228,6 +245,7 @@ def add_media(media_url, media_type, year, image_list=None, video_list=None, gif
 
 def process_post(post_link, year, username, proxy_group, image_list, video_list, gif_list):
     try:
+        logger.info(f"Processing post: {post_link}")
         response = make_request(post_link, proxy_group)
         soup = BeautifulSoup(response.text, 'html.parser')
         post_id = re.search(r'post-(\d+)', post_link).group(1) if re.search(r'post-(\d+)', post_link) else None
@@ -275,41 +293,46 @@ def process_post(post_link, year, username, proxy_group, image_list, video_list,
                         logger.info(f"Skipped {media_type}: {media_url} in post {post_link}")
             logger.info(f"Post {post_link}: Found {len(media_found)} media items: {media_found}")
     except Exception as e:
-        log_error(post_link, str(e))
+        log_error(post_link, f"Process post error: {str(e)}")
         logger.error(f"Error processing post {post_link}: {str(e)}")
 
 def process_year(year, search_url, username, chat_id, image_list, video_list, gif_list):
-    total_pages = fetch_total_pages(search_url, PROXY_GROUP_1)
-    urls_to_process = split_url(search_url, f"{year}-01-01", f"{year}-12-31") if total_pages >= 10 else [search_url]
-    executor1 = ThreadPoolExecutor(max_workers=3)
-    executor2 = ThreadPoolExecutor(max_workers=3)
-    executor3 = ThreadPoolExecutor(max_workers=3)
-    futures = []
-    for url in urls_to_process:
-        total_pages = fetch_total_pages(url, PROXY_GROUP_1)
-        logger.info(f"Processing {total_pages} pages for {url}")
-        for page in range(total_pages, 0, -1):  # Reverse for Dec 31 to Jan 1
-            post_links = scrape_post_links(f"{url}&page={page}", PROXY_GROUP_1)
-            third = len(post_links) // 3
-            for i, post in enumerate(post_links):
-                if i < third:
-                    proxy_group = PROXY_GROUP_1
-                    executor = executor1
-                elif i < 2 * third:
-                    proxy_group = PROXY_GROUP_2
-                    executor = executor2
-                else:
-                    proxy_group = PROXY_GROUP_3
-                    executor = executor3
-                future = executor.submit(process_post, post, year, username, proxy_group, image_list, video_list, gif_list)
-                futures.append(future)
-                time.sleep(THREAD_SUBMISSION_DELAY)
-    _, _, progress_msg_id = active_tasks[chat_id]
-    active_tasks[chat_id] = ((executor1, executor2, executor3), futures, progress_msg_id)
-    for future in as_completed(futures):
-        if chat_id not in active_tasks:
-            raise Exception("Task cancelled by user")
-        future.result()
+    try:
+        total_pages = fetch_total_pages(search_url, PROXY_GROUP_1)
+        urls_to_process = split_url(search_url, f"{year}-01-01", f"{year}-12-31") if total_pages >= 10 else [search_url]
+        executor1 = ThreadPoolExecutor(max_workers=3)
+        executor2 = ThreadPoolExecutor(max_workers=3)
+        executor3 = ThreadPoolExecutor(max_workers=3)
+        futures = []
+        for url in urls_to_process:
+            total_pages = fetch_total_pages(url, PROXY_GROUP_1)
+            logger.info(f"Processing {total_pages} pages for {url}")
+            for page in range(total_pages, 0, -1):  # Reverse for Dec 31 to Jan 1
+                post_links = scrape_post_links(f"{url}&page={page}", PROXY_GROUP_1)
+                third = len(post_links) // 3
+                for i, post in enumerate(post_links):
+                    if i < third:
+                        proxy_group = PROXY_GROUP_1
+                        executor = executor1
+                    elif i < 2 * third:
+                        proxy_group = PROXY_GROUP_2
+                        executor = executor2
+                    else:
+                        proxy_group = PROXY_GROUP_3
+                        executor = executor3
+                    future = executor.submit(process_post, post, year, username, proxy_group, image_list, video_list, gif_list)
+                    futures.append(future)
+                    time.sleep(THREAD_SUBMISSION_DELAY)
+        _, _, progress_msg_id = active_tasks[chat_id]
+        active_tasks[chat_id] = ((executor1, executor2, executor3), futures, progress_msg_id)
+        for future in as_completed(futures):
+            if chat_id not in active_tasks:
+                logger.info(f"Task cancelled for chat_id {chat_id}")
+                raise Exception("Task cancelled by user")
+            future.result()
+    except Exception as e:
+        logger.error(f"Error processing year {year}: {str(e)}")
+        raise
 
 def merge_and_deduplicate(file_type, media_list, merge_dir, username, start_year, end_year):
     if not media_list:
@@ -336,7 +359,7 @@ def merge_and_deduplicate(file_type, media_list, merge_dir, username, start_year
         logger.info(f"No unique {file_type} after deduplication")
         return None
     logger.info(f"Writing {len(unique_media)} unique {file_type} to HTML")
-    final_file_path = f"{merge_dir}/{file_type}.html"
+    final_file_path = os.path.join(merge_dir, f"{file_type}.html")
     if file_type == "images":
         init_html(final_file_path, f"{username} - Images Links ({start_year}-{end_year})", [content for content, _ in unique_media])
     else:
@@ -354,6 +377,7 @@ def send_telegram_message(chat_id, text, max_retries=MAX_RETRIES, **kwargs):
     for attempt in range(max_retries):
         try:
             response = bot.send_message(chat_id=chat_id, text=text, **kwargs)
+            logger.info(f"Sent message to chat_id {chat_id}: {text[:50]}...")
             time.sleep(TELEGRAM_RATE_LIMIT_DELAY)
             return response
         except TelegramError as e:
@@ -362,7 +386,7 @@ def send_telegram_message(chat_id, text, max_retries=MAX_RETRIES, **kwargs):
                 logger.warning(f"429 Too Many Requests: retrying after {retry_after} seconds")
                 time.sleep(retry_after)
                 continue
-            logger.error(f"Send message attempt {attempt + 1} failed: {str(e)}")
+            logger.error(f"Send message attempt {attempt + 1} failed for chat_id {chat_id}: {str(e)}")
             if attempt == max_retries - 1:
                 raise
             time.sleep(1 * (attempt + 1))
@@ -373,6 +397,7 @@ def send_telegram_document(chat_id, file_buffer, filename, caption, max_retries=
         try:
             file_buffer.seek(0)
             response = bot.send_document(chat_id=chat_id, document=file_buffer, filename=filename, caption=caption[:1024])
+            logger.info(f"Sent document {filename} to chat_id {chat_id}")
             time.sleep(TELEGRAM_RATE_LIMIT_DELAY)
             return response
         except TelegramError as e:
@@ -381,7 +406,7 @@ def send_telegram_document(chat_id, file_buffer, filename, caption, max_retries=
                 logger.warning(f"429 Too Many Requests: retrying after {retry_after} seconds")
                 time.sleep(retry_after)
                 continue
-            logger.error(f"Send document attempt {attempt + 1} failed: {str(e)}")
+            logger.error(f"Send document attempt {attempt + 1} failed for chat_id {chat_id}: {str(e)}")
             if attempt == max_retries - 1:
                 raise
             time.sleep(1 * (attempt + 1))
@@ -398,10 +423,13 @@ def cancel_task(chat_id):
         if progress_msg_id:
             try:
                 bot.delete_message(chat_id=chat_id, message_id=progress_msg_id)
+                logger.info(f"Deleted progress message for chat_id {chat_id}")
             except TelegramError as e:
-                logger.error(f"Failed to delete progress message: {str(e)}")
+                logger.error(f"Failed to delete progress message for chat_id {chat_id}: {str(e)}")
         del active_tasks[chat_id]
+        logger.info(f"Cancelled task for chat_id {chat_id}")
         return True
+    logger.info(f"No active task to cancel for chat_id {chat_id}")
     return False
 
 @app.route('/telegram', methods=['POST'])
@@ -443,13 +471,15 @@ def telegram_webhook():
         title_only = parts[title_only_idx].lower() == 'y' if len(parts) > title_only_idx else False
         start_year = int(parts[-2]) if len(parts) > 2 else 2019
         end_year = int(parts[-1]) if len(parts) > 1 else 2025
+        logger.info(f"Starting scrape for username: {username}, title_only: {title_only}, years: {start_year}-{end_year}")
         os.makedirs(SAVE_DIR, exist_ok=True)
         os.makedirs(MERGE_DIR, exist_ok=True)
         try:
             progress_msg = send_telegram_message(chat_id=chat_id, text=f"🔍 Processing '{username}' ({start_year}-{end_year})...")
             active_tasks[chat_id] = (None, [], progress_msg.message_id)
+            logger.info(f"Sent progress message for chat_id {chat_id}, message_id: {progress_msg.message_id}")
         except Exception as e:
-            logger.error(f"Failed to send progress message: {str(e)}")
+            logger.error(f"Failed to send progress message for chat_id {chat_id}: {str(e)}")
             send_telegram_message(chat_id=chat_id, text=f"❌ Failed to start: {str(e)}", reply_to_message_id=message_id)
             return '', 200
         try:
@@ -477,17 +507,18 @@ def telegram_webhook():
                             total_items = len(soup.body.find_all(['p', 'div'], recursive=False)) - len(soup.body.find_all('div', class_='year-section')) if soup.body else 0
                     send_telegram_document(chat_id, html_file, html_file.name,
                                           f"Found {total_items} {file_type} for '{username}' ({start_year}-{end_year})")
-                    logger.info(f"Sent {file_type}.html with {total_items} items")
+                    logger.info(f"Sent {file_type}.html with {total_items} items to chat_id {chat_id}")
                     any_sent = True
                 else:
                     logger.info(f"No {file_type} found or file empty: {final_file_path}")
             bot.delete_message(chat_id=chat_id, message_id=progress_msg.message_id)
+            logger.info(f"Deleted progress message for chat_id {chat_id}")
             if not any_sent:
                 send_telegram_message(chat_id=chat_id, text=f"⚠️ No media found for '{username}' ({start_year}-{end_year})")
         except Exception as e:
+            logger.error(f"Error processing {username} for chat_id {chat_id}: {str(e)}")
             bot.edit_message_text(chat_id=chat_id, message_id=progress_msg.message_id,
                                  text=f"❌ Error for '{username}': {str(e)}")
-            logger.error(f"Error processing {username}: {str(e)}")
         finally:
             if chat_id in active_tasks:
                 (executor1, executor2, executor3), _, _ = active_tasks[chat_id]
@@ -498,16 +529,18 @@ def telegram_webhook():
                 if executor3:
                     executor3.shutdown(wait=False)
                 del active_tasks[chat_id]
+                logger.info(f"Cleaned up task for chat_id {chat_id}")
             shutil.rmtree(SAVE_DIR, ignore_errors=True)
+            logger.info(f"Removed temporary directory {SAVE_DIR}")
         return '', 200
     except Exception as e:
-        logger.critical(f"Unhandled error in webhook: {str(e)}")
+        logger.critical(f"Unhandled error in webhook for chat_id {chat_id if 'chat_id' in locals() else 'unknown'}: {str(e)}")
         if 'chat_id' in locals() and 'message_id' in locals():
             try:
                 send_telegram_message(chat_id=chat_id, text=f"❌ Critical error: {str(e)}", reply_to_message_id=message_id)
             except Exception as send_e:
-                logger.error(f"Failed to send error message: {str(send_e)}")
-        if chat_id in active_tasks:
+                logger.error(f"Failed to send error message to chat_id {chat_id}: {str(send_e)}")
+        if 'chat_id' in locals() and chat_id in active_tasks:
             cancel_task(chat_id)
         return '', 200
 
