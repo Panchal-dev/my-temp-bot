@@ -66,8 +66,8 @@
 #flask==2.3.3
 #requests==2.31.0
 #beautifulsoup4==4.12.2
-#telebot==0.0.5
 
+telebot==0.0.5
 tqdm==4.66.1
 colorama==0.4.6
 requests==2.32.3
