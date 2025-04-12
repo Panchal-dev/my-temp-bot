@@ -30,7 +30,7 @@ MERGE_DIR = "Merge"
 ERROR_LOG_FILE = os.path.join(MERGE_DIR, "error.txt")
 MAX_RETRIES = 3
 MAX_WORKERS = 9  # 3 for PROXY_GROUP_1, 3 for PROXY_GROUP_2, 3 for PROXY_GROUP_3
-TELEGRAM_RATE_LIMIT_DELAY = 2  # Seconds between Telegram API calls
+TELEGRAM_RATE_LIMIT_DELAY = 0  # Seconds between Telegram API calls
 THREAD_SUBMISSION_DELAY = 0.5  # Slight delay for stability
 
 # Proxy configuration
