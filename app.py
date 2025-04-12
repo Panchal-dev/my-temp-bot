@@ -2,17 +2,16 @@ import os
 import requests
 from bs4 import BeautifulSoup
 import re
-from urllib.parse import urljoin, urlparse
+from urllib.parse import urljoin
 from flask import Flask, request
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from io import BytesIO
-import telebot
-import pendulum
+import telegram
 import time
 import logging
 import shutil
 import json
-from telebot.apihelper import ApiTelegramException
+from telegram.error import TelegramError
 
 # Initialize logging
 logging.basicConfig(
@@ -160,19 +159,20 @@ def generate_year_link(year, username, title_only=False):
 
 def split_url(url, start_date, end_date, max_pages=10):
     try:
-        start_dt = pendulum.parse(start_date)
-        end_dt = pendulum.parse(end_date)
+        from datetime import datetime, timedelta
+        start_dt = datetime.strptime(start_date, "%Y-%m-%d")
+        end_dt = datetime.strptime(end_date, "%Y-%m-%d")
         total_pages = fetch_total_pages(url)
         if total_pages < max_pages:
             return [url]
         total_days = (end_dt - start_dt).days
-        mid_dt = start_dt.add(days=total_days // 2)
-        first_range = (start_date, mid_dt.format("YYYY-MM-DD"))
-        second_range = (mid_dt.add(days=1).format("YYYY-MM-DD"), end_date)
+        mid_dt = start_dt + timedelta(days=total_days // 2)
+        first_range = (start_date, mid_dt.strftime("%Y-%m-%d"))
+        second_range = ((mid_dt + timedelta(days=1)).strftime("%Y-%m-%d"), end_date)
         first_url = re.sub(r"c\[newer_than\]=[^&]+", f"c[newer_than]={first_range[0]}", url)
-        first_url = re.sub(r"c\[older_than\]=[^&]+", f"c[older_than]={first_range[1]}", first_url)
+        first_url = re.sub(r"c\[older_than\]=[^&]+", f"c[older_than]={first_range[1]}", url)
         second_url = re.sub(r"c\[newer_than\]=[^&]+", f"c[newer_than]={second_range[0]}", url)
-        second_url = re.sub(r"c\[older_than\]=[^&]+", f"c[older_than]={second_range[1]}", second_url)
+        second_url = re.sub(r"c\[older_than\]=[^&]+", f"c[older_than]={second_range[1]}", url)
         return split_url(first_url, first_range[0], first_range[1]) + split_url(second_url, second_range[0], second_range[1])
     except Exception as e:
         log_error(url, f"Split error: {str(e)}")
@@ -196,11 +196,7 @@ def scrape_post_links(search_url, proxy_group=PROXY_GROUP_1):
     logger.info(f"Found {len(links)} post links for {search_url}")
     return links
 
-def normalize_url(url):
-    parsed = urlparse(url)
-    return parsed.scheme + "://" + parsed.netloc + parsed.path
-
-def add_media(media_url, media_type, year, image_list=None, video_list=None, gif_list=None, timestamp=None, seen_urls=None):
+def add_media(media_url, media_type, year, image_list=None, video_list=None, gif_list=None, seen_urls=None):
     exclude_keywords = ["addonflare/awardsystem/icons/", "ozzmodz_badges_badge/", "avatars/"]
     if media_url.startswith("data:image") or any(keyword in media_url.lower() for keyword in exclude_keywords):
         logger.info(f"Filtered out {media_url} due to exclusion rules")
@@ -210,23 +206,24 @@ def add_media(media_url, media_type, year, image_list=None, video_list=None, gif
         logger.info(f"Skipped duplicate in-year {media_type}: {media_url}")
         return False
     if media_type == "image" and image_list is not None:
-        logger.info(f"Adding image: {media_url} at {timestamp} for year {year}")
-        image_list.append((timestamp, media_url, year))
+        logger.info(f"Adding image: {media_url} for year {year}")
+        image_list.append((media_url, year))
         if seen_urls is not None:
             seen_urls.add(media_url)
         return True
     elif media_type == "video" and video_list is not None:
-        logger.info(f"Adding video: {media_url} at {timestamp} for year {year}")
-        video_list.append((timestamp, f'<p><video controls style="max-width:100%;"><source src="{media_url}" type="video/mp4"></video></p>', year))
+        logger.info(f"Adding video: {media_url} for year {year}")
+        video_list.append((f'<p><video controls style="max-width:100%;"><source src="{media_url}" type="video/mp4"></video></p>', year))
         if seen_urls is not None:
             seen_urls.add(media_url)
         return True
     elif media_type == "gif" and gif_list is not None:
-        logger.info(f"Adding GIF: {media_url} at {timestamp} for year {year}")
-        gif_list.append((timestamp, f'<div><img src="{media_url}" alt="GIF" style="max-width:100%;height:auto;"></div>', year))
+        logger.info(f"Adding GIF: {media_url} for year {year}")
+        gif_list.append((f'<div><img src="{media_url}" alt="GIF" style="max-width:100%;height:auto;"></div>', year))
         if seen_urls is not None:
             seen_urls.add(media_url)
         return True
+    logger.info(f"Rejected {media_type}: {media_url} for year {year}")
     return False
 
 def process_post(post_link, year, username, proxy_group, image_list, video_list, gif_list):
@@ -239,32 +236,22 @@ def process_post(post_link, year, username, proxy_group, image_list, video_list,
         articles = [a for a in articles if a and (username_lower in a.get_text(separator=" ").lower() or username_lower in a.get('data-author', '').lower())]
         seen_urls = set()
         for article in articles:
-            time_tag = article.find('time', class_='u-dt')
-            if time_tag and 'datetime' in time_tag.attrs:
-                try:
-                    timestamp = pendulum.parse(time_tag['datetime']).in_timezone('UTC')
-                except Exception as e:
-                    logger.warning(f"Failed to parse timestamp for post {post_link}: {str(e)}")
-                    timestamp = pendulum.datetime(year, 12, 31, 23, 59, 59, tz='UTC')
-            else:
-                logger.warning(f"No timestamp found for post {post_link}, using year-end {year}")
-                timestamp = pendulum.datetime(year, 12, 31, 23, 59, 59, tz='UTC')
             media_found = []
-            for media in article.find_all(['img', 'video', 'source', 'a', 'div', 'span'], recursive=True):
+            for media in article.find_all(['img', 'video', 'source', 'a'], recursive=True):
                 media_url = None
                 media_type = None
                 if media.name == 'img' and media.get('src'):
-                    media_url = media.get('data-url', media['src'])
-                    media_type = "gif" if media_url.lower().endswith(".gif") else "image"
-                elif media.name == 'video' and media.get('src'):
                     media_url = media['src']
-                    media_type = "video"
+                    media_type = "gif" if media_url.lower().endswith(".gif") else "image"
+                elif media.name == 'video' and (media.get('src') or media.find('source')):
+                    media_url = media.get('src') or (media.find('source').get('src') if media.find('source') else None)
+                    media_type = "video" if media_url else None
                 elif media.name == 'source' and media.get('src'):
                     media_url = media['src']
                     media_type = "video"
                 elif media.name == 'a' and media.get('href'):
                     href = media['href']
-                    if href.lower().endswith(('.gif')):
+                    if href.lower().endswith('.gif'):
                         media_url = href
                         media_type = "gif"
                     elif href.lower().endswith(('.mp4', '.webm', '.mov')):
@@ -273,10 +260,6 @@ def process_post(post_link, year, username, proxy_group, image_list, video_list,
                     elif href.lower().endswith(('.jpg', '.jpeg', '.png')):
                         media_url = href
                         media_type = "image"
-                elif media.name in ('div', 'span') and (media.get('data-src') or media.get('data-url')):
-                    media_url = media.get('data-src') or media.get('data-url')
-                    if media_url:
-                        media_type = "gif" if media_url.lower().endswith(".gif") else "video" if media_url.lower().endswith(('.mp4', '.webm', '.mov')) else "image"
                 if media_url and media_type:
                     media_found.append((media_url, media_type))
                     added = add_media(
@@ -286,7 +269,6 @@ def process_post(post_link, year, username, proxy_group, image_list, video_list,
                         image_list if media_type == "image" else None,
                         video_list if media_type == "video" else None,
                         gif_list if media_type == "gif" else None,
-                        timestamp,
                         seen_urls
                     )
                     if not added:
@@ -306,7 +288,7 @@ def process_year(year, search_url, username, chat_id, image_list, video_list, gi
     for url in urls_to_process:
         total_pages = fetch_total_pages(url, PROXY_GROUP_1)
         logger.info(f"Processing {total_pages} pages for {url}")
-        for page in range(total_pages, 0, -1):
+        for page in range(total_pages, 0, -1):  # Reverse for Dec 31 to Jan 1
             post_links = scrape_post_links(f"{url}&page={page}", PROXY_GROUP_1)
             third = len(post_links) // 3
             for i, post in enumerate(post_links):
@@ -334,10 +316,9 @@ def merge_and_deduplicate(file_type, media_list, merge_dir, username, start_year
         logger.info(f"No {file_type} to process")
         return None
     logger.info(f"Processing {len(media_list)} {file_type} items before deduplication")
-    media_list.sort(key=lambda x: x[0], reverse=True)
     seen_urls = set()
     unique_media = []
-    for timestamp, content, year in media_list:
+    for content, year in media_list:
         url = content
         if file_type != "images":
             soup = BeautifulSoup(content, 'html.parser')
@@ -345,24 +326,23 @@ def merge_and_deduplicate(file_type, media_list, merge_dir, username, start_year
                 url = soup.video.source.get("src")
             elif file_type == "gifs" and soup.img:
                 url = soup.img.get("src")
-        normalized_url = normalize_url(url)
-        if normalized_url not in seen_urls:
-            seen_urls.add(normalized_url)
-            unique_media.append((timestamp, content, year))
-            logger.info(f"Kept {file_type}: {url} with timestamp {timestamp} for year {year}")
+        if url not in seen_urls:
+            seen_urls.add(url)
+            unique_media.append((content, year))
+            logger.info(f"Kept {file_type}: {url} for year {year}")
         else:
-            logger.info(f"Skipped cross-year duplicate {file_type}: {url} with timestamp {timestamp}")
+            logger.info(f"Skipped cross-year duplicate {file_type}: {url}")
     if not unique_media:
         logger.info(f"No unique {file_type} after deduplication")
         return None
     logger.info(f"Writing {len(unique_media)} unique {file_type} to HTML")
     final_file_path = f"{merge_dir}/{file_type}.html"
     if file_type == "images":
-        init_html(final_file_path, f"{username} - Images Links ({start_year}-{end_year})", [content for _, content, _ in unique_media])
+        init_html(final_file_path, f"{username} - Images Links ({start_year}-{end_year})", [content for content, _ in unique_media])
     else:
         init_html(final_file_path, f"Merged {file_type.capitalize()} Links ({start_year}-{end_year})")
         current_year = None
-        for timestamp, content, year in unique_media:
+        for content, year in unique_media:
             if year != current_year:
                 append_to_html(final_file_path, f'<div class="year-section"><h2>{year}</h2></div>')
                 current_year = year
@@ -376,9 +356,9 @@ def send_telegram_message(chat_id, text, max_retries=MAX_RETRIES, **kwargs):
             response = bot.send_message(chat_id=chat_id, text=text, **kwargs)
             time.sleep(TELEGRAM_RATE_LIMIT_DELAY)
             return response
-        except ApiTelegramException as e:
-            if e.error_code == 429:
-                retry_after = int(e.result_json.get('parameters', {}).get('retry_after', 3))
+        except TelegramError as e:
+            if 'Too Many Requests' in str(e):
+                retry_after = 3
                 logger.warning(f"429 Too Many Requests: retrying after {retry_after} seconds")
                 time.sleep(retry_after)
                 continue
@@ -392,12 +372,12 @@ def send_telegram_document(chat_id, file_buffer, filename, caption, max_retries=
     for attempt in range(max_retries):
         try:
             file_buffer.seek(0)
-            response = bot.send_document(chat_id=chat_id, document=file_buffer, visible_file_name=filename, caption=caption[:1024])
+            response = bot.send_document(chat_id=chat_id, document=file_buffer, filename=filename, caption=caption[:1024])
             time.sleep(TELEGRAM_RATE_LIMIT_DELAY)
             return response
-        except ApiTelegramException as e:
-            if e.error_code == 429:
-                retry_after = int(e.result_json.get('parameters', {}).get('retry_after', 3))
+        except TelegramError as e:
+            if 'Too Many Requests' in str(e):
+                retry_after = 3
                 logger.warning(f"429 Too Many Requests: retrying after {retry_after} seconds")
                 time.sleep(retry_after)
                 continue
@@ -529,7 +509,8 @@ def telegram_webhook():
 @app.route('/health', methods=['GET'])
 def health_check():
     from flask import jsonify
-    return jsonify({"status": "healthy", "time": pendulum.now().isoformat()})
+    from datetime import datetime
+    return jsonify({"status": "healthy", "time": datetime.now().isoformat()})
 
 def set_webhook():
     railway_url = os.environ.get('RAILWAY_PUBLIC_DOMAIN')
@@ -542,7 +523,7 @@ def set_webhook():
 
 try:
     TELEGRAM_BOT_TOKEN = os.environ['TELEGRAM_BOT_TOKEN']
-    bot = telebot.TeleBot(TELEGRAM_BOT_TOKEN)
+    bot = telegram.Bot(token=TELEGRAM_BOT_TOKEN)
 except KeyError:
     logger.error("TELEGRAM_BOT_TOKEN environment variable not set!")
     raise
