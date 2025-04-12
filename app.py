@@ -29,7 +29,7 @@ SAVE_DIR = "HTML_Pages"
 MERGE_DIR = "Merge"
 ERROR_LOG_FILE = os.path.join(MERGE_DIR, "error.txt")
 MAX_RETRIES = 3
-MAX_WORKERS = 6  # 5 for PROXY_GROUP_1, 5 for PROXY_GROUP_2
+MAX_WORKERS = 6  # 3 for PROXY_GROUP_1, 3 for PROXY_GROUP_2
 TELEGRAM_RATE_LIMIT_DELAY = 0  # Seconds between Telegram API calls
 
 # Proxy configuration
@@ -54,15 +54,15 @@ FALLBACK_PROXIES = [
 ALLOWED_CHAT_IDS = {5809601894, 1285451259}
 active_tasks = {}
 
-# HTML initialization with masonry styling for images and gifs
-def init_html(file_path, title, media_urls=None):
-    media_urls = media_urls or []
-    if not all(isinstance(url, str) for url in media_urls):
-        logger.error(f"media_urls contains non-string items: {media_urls}")
-        raise ValueError("All media URLs must be strings")
-    media_urls_json = json.dumps(media_urls)
-    if "images.html" in file_path or "gifs.html" in file_path:
-        media_type = "Images" if "images.html" in file_path else "GIFs"
+# HTML initialization with masonry styling for images
+def init_html(file_path, title, image_urls=None, year=None):
+    if "images.html" in file_path:
+        image_urls = image_urls or []
+        if not all(isinstance(url, str) for url in image_urls):
+            logger.error(f"image_urls contains non-string items: {image_urls}")
+            raise ValueError("All image URLs must be strings")
+        image_urls_json = json.dumps(image_urls)
+        title_with_year = f"{title} ({year}-{year})" if year else title
         with open(file_path, "w", encoding="utf-8") as f:
             f.write(f"""<!DOCTYPE html>
 <html>
@@ -76,7 +76,7 @@ def init_html(file_path, title, media_urls=None):
             background-color: black;
             color: white;
         }}
-        h1 {{
+        h1, h2 {{
             text-align: center;
         }}
         .masonry-container {{
@@ -98,11 +98,12 @@ def init_html(file_path, title, media_urls=None):
     </style>
 </head>
 <body>
-    <h1>{title}</h1>
+    <h1>{title_with_year}</h1>
+    <h2>{year}</h2>
     <div class="masonry-container" id="masonry"></div>
 
     <script>
-        const mediaUrls = {media_urls_json};
+        const imageUrls = {image_urls_json};
 
         const columns = 3;
         const masonry = document.getElementById('masonry');
@@ -115,18 +116,17 @@ def init_html(file_path, title, media_urls=None):
             colDivs.push(col);
         }}
 
-        mediaUrls.forEach((url, index) => {{
+        imageUrls.forEach((url, index) => {{
             const img = document.createElement('img');
             img.src = url;
-            const colIndex = Math.floor(index / (Math.ceil(mediaUrls.length / columns)));
-            colDivs[colIndex % columns].appendChild(img);
+            colDivs[index % columns].appendChild(img);
         }});
     </script>
 </body>
 </html>""")
     else:
         with open(file_path, "w", encoding="utf-8") as f:
-            f.write(f"""<!DOCTYPE html><html><head><title>{title}</title></head><body style="background-color: black; color: white;">""")
+            f.write(f"""<!DOCTYPE html><html><head><title>{title}</title></head><body>""")
 
 def append_to_html(file_path, content):
     with open(file_path, "a", encoding="utf-8") as f:
@@ -134,7 +134,7 @@ def append_to_html(file_path, content):
         logger.info(f"Appended to {file_path}: {content[:50]}...")
 
 def close_html(file_path):
-    if not ("images.html" in file_path or "gifs.html" in file_path):
+    if not "images.html" in file_path:
         with open(file_path, "a", encoding="utf-8") as f:
             f.write("</body></html>")
 
@@ -220,13 +220,16 @@ def add_media(media_url, media_type, year, media_list=None):
         return
     media_url = urljoin(BASE_URL, media_url) if media_url.startswith("/") else media_url
     
-    if media_type in ["image", "gif"] and media_list is not None:
-        logger.info(f"Adding {media_type} to list: {media_url}")
+    if media_type == "image" and media_list is not None:
+        logger.info(f"Adding image to list: {media_url}")
         media_list.append(media_url)
     elif media_type == "video":
         append_to_html(f"{SAVE_DIR}/{year}/videos.html", f'<p><video controls style="max-width:100%;"><source src="{media_url}" type="video/mp4"></video></p>')
+    elif media_type == "gif":
+        append_to_html(f"{SAVE_DIR}/{year}/gifs.html", f'<div><img src="{media_url}" alt="GIF" style="max-width:80%;height:auto;"></div>')
+        logger.info(f"Added GIF: {media_url}")
 
-def process_post(post_link, year, username, proxy_group, image_list, gif_list):
+def process_post(post_link, year, username, proxy_group, image_list):
     try:
         response = make_request(post_link, proxy_group)
         soup = BeautifulSoup(response.text, 'html.parser')
@@ -237,14 +240,23 @@ def process_post(post_link, year, username, proxy_group, image_list, gif_list):
         articles = [a for a in articles if a and (username_lower in a.get_text(separator=" ").lower() or username_lower in a.get('data-author', '').lower())]
         
         for article in articles:
+            time_tag = article.find('time', class_='u-dt')
+            if time_tag and 'datetime' in time_tag.attrs:
+                timestamp = datetime.fromisoformat(time_tag['datetime'].replace('Z', '+00:00'))
+            else:
+                timestamp = datetime.now()
+                logger.warning(f"No timestamp found for post {post_link}, using current time")
+            
             for media in article.find_all(['img', 'video', 'source', 'a'], recursive=True):
                 if media.name == 'img' and media.get('src'):
                     src = media['src']
                     if media.get('data-url'):
                         src = media['data-url']
                     media_type = "gif" if src.lower().endswith(".gif") else "image"
-                    logger.info(f"Found {media_type}: {src}")
-                    add_media(src, media_type, year, gif_list if media_type == "gif" else image_list)
+                    logger.info(f"Found {media_type}: {src} at {timestamp}")
+                    add_media(src, media_type, year, image_list if media_type == "image" else None)
+                    if media_type == "image" and image_list and isinstance(image_list[-1], str):
+                        image_list[-1] = (timestamp, image_list[-1])
                 elif media.name == 'video' and media.get('src'):
                     logger.info(f"Found video: {media['src']}")
                     add_media(media['src'], "video", year)
@@ -255,8 +267,10 @@ def process_post(post_link, year, username, proxy_group, image_list, gif_list):
                     href = media['href']
                     if any(href.lower().endswith(ext) for ext in ['.jpg', '.jpeg', '.png', '.gif', '.mp4', '.webm', '.mov']):
                         media_type = "gif" if href.lower().endswith('.gif') else "image" if href.endswith(('.jpg', '.jpeg', '.png')) else "video"
-                        logger.info(f"Found {media_type} from link: {href}")
-                        add_media(href, media_type, year, gif_list if media_type == "gif" else image_list)
+                        logger.info(f"Found {media_type} from link: {href} at {timestamp}")
+                        add_media(href, media_type, year, image_list if media_type == "image" else None)
+                        if media_type == "image" and image_list and isinstance(image_list[-1], str):
+                            image_list[-1] = (timestamp, image_list[-1])
     except Exception as e:
         log_error(post_link, str(e))
 
@@ -264,7 +278,7 @@ def process_year(year, search_url, username, chat_id):
     year_dir = f"{SAVE_DIR}/{year}"
     os.makedirs(year_dir, exist_ok=True)
     
-    for file_type in ["videos"]:
+    for file_type in ["videos", "gifs"]:
         init_html(f"{year_dir}/{file_type}.html", f"{year} {file_type.capitalize()} Links")
     
     total_pages = fetch_total_pages(search_url, PROXY_GROUP_1)
@@ -273,17 +287,17 @@ def process_year(year, search_url, username, chat_id):
     executor1 = ThreadPoolExecutor(max_workers=3)
     executor2 = ThreadPoolExecutor(max_workers=3)
     futures = []
-    image_list = []  # List of URLs in original order
-    gif_list = []    # List of URLs in original order
+    image_list = []
     
     for url in urls_to_process:
         total_pages = fetch_total_pages(url, PROXY_GROUP_1)
-        for page in range(total_pages, 0, -1):  # Newest to oldest
+        for page in range(total_pages, 0, -1):
             post_links = scrape_post_links(f"{url}&page={page}", PROXY_GROUP_1)
+            half = len(post_links) // 2
             for i, post in enumerate(post_links):
-                proxy_group = PROXY_GROUP_1 if i < len(post_links) // 2 else PROXY_GROUP_2
-                executor = executor1 if i < len(post_links) // 2 else executor2
-                future = executor.submit(process_post, post, year, username, proxy_group, image_list, gif_list)
+                proxy_group = PROXY_GROUP_1 if i < half else PROXY_GROUP_2
+                executor = executor1 if i < half else executor2
+                future = executor.submit(process_post, post, year, username, proxy_group, image_list)
                 futures.append(future)
     
     _, _, progress_msg_id = active_tasks[chat_id]
@@ -294,34 +308,24 @@ def process_year(year, search_url, username, chat_id):
             raise Exception("Task cancelled by user")
         future.result()
     
-    # Deduplicate while preserving order
+    image_list.sort(key=lambda x: x[0], reverse=True)
     seen_urls = set()
     unique_image_urls = []
-    for url in image_list:
+    for timestamp, url in image_list:
         normalized_url = normalize_url(url)
         if normalized_url not in seen_urls:
             seen_urls.add(normalized_url)
             unique_image_urls.append(url)
-            logger.info(f"Kept image: {url}")
+            logger.info(f"Kept image: {url} with timestamp {timestamp}")
     
-    seen_urls = set()
-    unique_gif_urls = []
-    for url in gif_list:
-        normalized_url = normalize_url(url)
-        if normalized_url not in seen_urls:
-            seen_urls.add(normalized_url)
-            unique_gif_urls.append(url)
-            logger.info(f"Kept GIF: {url}")
+    init_html(f"{year_dir}/images.html", f"{username} - Images Links", unique_image_urls, year)
     
-    init_html(f"{year_dir}/images.html", f"{username} - Images Links ({year}-{year})", unique_image_urls)
-    init_html(f"{year_dir}/gifs.html", f"{username} - GIFs Links ({year}-{year})", unique_gif_urls)
-    
-    for file_type in ["videos"]:
+    for file_type in ["videos", "gifs"]:
         close_html(f"{year_dir}/{file_type}.html")
         logger.info(f"Closed {year_dir}/{file_type}.html")
 
 def merge_html_files(file_type, years, merge_dir):
-    if file_type in ["images", "gifs"]:
+    if file_type == "images":
         return None
     merge_file_path = f"{merge_dir}/{file_type}_temp.html"
     init_html(merge_file_path, f"Merged {file_type.capitalize()} Links")
@@ -337,7 +341,7 @@ def merge_html_files(file_type, years, merge_dir):
     return merge_file_path
 
 def deduplicate_html(file_type, temp_file_path, final_file_path):
-    if file_type in ["images", "gifs"] or not temp_file_path:
+    if file_type == "images" or not temp_file_path:
         return
     with open(temp_file_path, "r", encoding="utf-8") as f:
         soup = BeautifulSoup(f.read(), 'html.parser')
@@ -349,6 +353,8 @@ def deduplicate_html(file_type, temp_file_path, final_file_path):
         url = None
         if file_type == "videos" and element.name == "p" and element.video and element.video.source:
             url = normalize_url(element.video.source.get("src"))
+        elif file_type == "gifs" and element.name == "div" and element.img:
+            url = normalize_url(element.img.get("src"))
         
         if url and url not in seen_urls:
             seen_urls.add(url)
@@ -431,7 +437,7 @@ def telegram_webhook():
             if cancel_task(chat_id):
                 send_telegram_message(chat_id=chat_id, text="✅ Scraping stopped", reply_to_message_id=message_id)
             else:
-                send_telegram_message(chat_id=chat_id, text="ℹ️ No active scraping to stop", reply_to_message_id=message_id)
+                send_telegram_message(chat_id=chat_id, text="ℹ️ No active scraping to stop dev.", reply_to_message_id=message_id)
             return '', 200
 
         parts = text.split()
@@ -467,10 +473,10 @@ def telegram_webhook():
                 process_year(year, search_url, username, chat_id)
 
             any_sent = False
-            for file_type in ["images", "gifs", "videos"]:
-                if file_type in ["images", "gifs"]:
+            for file_type in ["images", "videos", "gifs"]:
+                if file_type == "images":
                     for year in years:
-                        final_file_path = f"{SAVE_DIR}/{year}/{file_type}.html"
+                        final_file_path = f"{SAVE_DIR}/{year}/images.html"
                         if os.path.exists(final_file_path) and os.path.getsize(final_file_path) > 0:
                             with open(final_file_path, 'rb') as f:
                                 html_file = BytesIO(f.read())
@@ -479,7 +485,7 @@ def telegram_webhook():
                                 soup = BeautifulSoup(f2.read(), 'html.parser')
                                 script_tag = soup.find('script')
                                 if script_tag:
-                                    urls_match = re.search(r'const mediaUrls = (\[.*?\]);', script_tag.string, re.DOTALL)
+                                    urls_match = re.search(r'const imageUrls = (\[.*?\]);', script_tag.string, re.DOTALL)
                                     total_items = len(json.loads(urls_match.group(1))) if urls_match else 0
                                 else:
                                     total_items = 0
