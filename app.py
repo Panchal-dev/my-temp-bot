@@ -34,16 +34,16 @@ TELEGRAM_RATE_LIMIT_DELAY = 0  # Seconds between Telegram API calls
 THREAD_SUBMISSION_DELAY = 0.5  # Slight delay for stability
 
 # Proxy configuration
-PROXY_GROUP_1 = {"http": "http://34.143.143.61:7777", "https": "http://34.143.143.61:7777"}
-PROXY_GROUP_2 = {"http": "http://45.140.143.77:18080", "https": "http://45.140.143.77:18080"}
-PROXY_GROUP_3 = {"http": "http://43.153.22.138:13001", "https": "http://43.153.22.138:13001"}
+PROXY_GROUP_1 = {"http": "http://45.140.143.77:18080", "https": "http://45.140.143.77:18080"}
+PROXY_GROUP_2 = {"http": "http://34.143.143.61:7777", "https": "http://34.143.143.61:7777"}
+PROXY_GROUP_3 = {"http": "http://146.56.142.114:1080", "https": "http://146.56.142.114:1080"}
 FALLBACK_PROXIES = [
-    {"http": "http://134.199.157.223:30001", "https": "http://134.199.157.223:30001"},
-    {"http": "http://146.56.142.114:1080", "https": "http://146.56.142.114:1080"},
     {"http": "http://171.240.118.170:5170", "https": "http://171.240.118.170:5170"},
-    {"http": "http://34.143.143.61:7777", "https": "http://34.143.143.61:7777"},
+    {"http": "http://116.108.21.141:10020", "https": "http://116.108.21.141:10020"},
+    {"http": "http://172.167.161.8:8080", "https": "http://172.167.161.8:8080"},
     {"http": "http://45.140.143.77:18080", "https": "http://45.140.143.77:18080"},
-    {"http": "http://43.153.22.138:13001", "https": "http://43.153.22.138:13001"},
+    {"http": "http://34.143.143.61:7777", "https": "http://34.143.143.61:7777"},
+    {"http": "http://146.56.142.114:1080", "https": "http://146.56.142.114:1080"},
 ]
 
 ALLOWED_CHAT_IDS = {5809601894, 1285451259}
