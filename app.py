@@ -362,7 +362,7 @@ def send_telegram_message(chat_id, text, max_retries=MAX_RETRIES, **kwargs):
                 logger.warning(f"429 Too Many Requests: retrying after {retry_after} seconds")
                 time.sleep(retry_after)
                 continue
-            logger.warning(f"Send message attempt {attempt + 1} failed: {str(e)}")
+            logger.error(f"Send message attempt {attempt + 1} failed: {str(e)}")
             if attempt == max_retries - 1:
                 raise
             time.sleep(1 * (attempt + 1))
@@ -381,7 +381,7 @@ def send_telegram_document(chat_id, file_buffer, filename, caption, max_retries=
                 logger.warning(f"429 Too Many Requests: retrying after {retry_after} seconds")
                 time.sleep(retry_after)
                 continue
-            logger.warning(f"Send document attempt {attempt + 1} failed: {str(e)}")
+            logger.error(f"Send document attempt {attempt + 1} failed: {str(e)}")
             if attempt == max_retries - 1:
                 raise
             time.sleep(1 * (attempt + 1))
@@ -389,12 +389,17 @@ def send_telegram_document(chat_id, file_buffer, filename, caption, max_retries=
 
 def cancel_task(chat_id):
     if chat_id in active_tasks:
-        (executor1, executor2, executor3), futures, _ = active_tasks[chat_id]
+        (executor1, executor2, executor3), futures, progress_msg_id = active_tasks[chat_id]
         for future in futures:
             future.cancel()
         executor1.shutdown(wait=False)
         executor2.shutdown(wait=False)
         executor3.shutdown(wait=False)
+        if progress_msg_id:
+            try:
+                bot.delete_message(chat_id=chat_id, message_id=progress_msg_id)
+            except TelegramError as e:
+                logger.error(f"Failed to delete progress message: {str(e)}")
         del active_tasks[chat_id]
         return True
     return False
@@ -404,10 +409,12 @@ def telegram_webhook():
     try:
         update = request.get_json()
         if not update or 'message' not in update:
+            logger.info("Received empty or invalid update")
             return '', 200
         chat_id = update['message']['chat']['id']
         message_id = update['message'].get('message_id')
         text = update['message'].get('text', '').strip()
+        logger.info(f"Received command: {text} from chat_id: {chat_id}")
         if chat_id not in ALLOWED_CHAT_IDS:
             send_telegram_message(chat_id=chat_id, text="❌ Restricted to specific users.", reply_to_message_id=message_id)
             return '', 200
@@ -418,7 +425,7 @@ def telegram_webhook():
             if cancel_task(chat_id):
                 send_telegram_message(chat_id=chat_id, text="✅ Scraping stopped", reply_to_message_id=message_id)
             else:
-                send_telegram_message(chat_id=chat_id, text="ℹ️ No active scraping to stop -jp", reply_to_message_id=message_id)
+                send_telegram_message(chat_id=chat_id, text="ℹ️ No active scraping to stop", reply_to_message_id=message_id)
             return '', 200
         parts = text.split()
         if len(parts) < 1 or (parts[0] == '/start' and len(parts) < 2):
@@ -438,8 +445,13 @@ def telegram_webhook():
         end_year = int(parts[-1]) if len(parts) > 1 else 2025
         os.makedirs(SAVE_DIR, exist_ok=True)
         os.makedirs(MERGE_DIR, exist_ok=True)
-        progress_msg = send_telegram_message(chat_id=chat_id, text=f"🔍 Processing '{username}' ({start_year}-{end_year})...")
-        active_tasks[chat_id] = (None, [], progress_msg.message_id)
+        try:
+            progress_msg = send_telegram_message(chat_id=chat_id, text=f"🔍 Processing '{username}' ({start_year}-{end_year})...")
+            active_tasks[chat_id] = (None, [], progress_msg.message_id)
+        except Exception as e:
+            logger.error(f"Failed to send progress message: {str(e)}")
+            send_telegram_message(chat_id=chat_id, text=f"❌ Failed to start: {str(e)}", reply_to_message_id=message_id)
+            return '', 200
         try:
             years = list(range(end_year, start_year - 1, -1))
             image_list = []
@@ -489,21 +501,14 @@ def telegram_webhook():
             shutil.rmtree(SAVE_DIR, ignore_errors=True)
         return '', 200
     except Exception as e:
-        logger.critical(f"Unhandled error: {str(e)}")
-        if 'chat_id' in locals() and 'progress_msg' in locals():
+        logger.critical(f"Unhandled error in webhook: {str(e)}")
+        if 'chat_id' in locals() and 'message_id' in locals():
             try:
-                bot.edit_message_text(chat_id=chat_id, message_id=progress_msg.message_id, text=f"❌ Critical error: {str(e)}")
-            except:
-                pass
+                send_telegram_message(chat_id=chat_id, text=f"❌ Critical error: {str(e)}", reply_to_message_id=message_id)
+            except Exception as send_e:
+                logger.error(f"Failed to send error message: {str(send_e)}")
         if chat_id in active_tasks:
-            (executor1, executor2, executor3), _, _ = active_tasks[chat_id]
-            if executor1:
-                executor1.shutdown(wait=False)
-            if executor2:
-                executor2.shutdown(wait=False)
-            if executor3:
-                executor3.shutdown(wait=False)
-            del active_tasks[chat_id]
+            cancel_task(chat_id)
         return '', 200
 
 @app.route('/health', methods=['GET'])
@@ -516,14 +521,18 @@ def set_webhook():
     railway_url = os.environ.get('RAILWAY_PUBLIC_DOMAIN')
     if railway_url:
         webhook_url = f"https://{railway_url}/telegram"
-        bot.set_webhook(url=webhook_url)
-        logger.info(f"Webhook set to: {webhook_url}")
+        try:
+            bot.set_webhook(url=webhook_url)
+            logger.info(f"Webhook set to: {webhook_url}")
+        except TelegramError as e:
+            logger.error(f"Failed to set webhook: {str(e)}")
     else:
         logger.error("RAILWAY_PUBLIC_DOMAIN not set")
 
 try:
     TELEGRAM_BOT_TOKEN = os.environ['TELEGRAM_BOT_TOKEN']
     bot = telegram.Bot(token=TELEGRAM_BOT_TOKEN)
+    logger.info("Bot initialized successfully")
 except KeyError:
     logger.error("TELEGRAM_BOT_TOKEN environment variable not set!")
     raise
