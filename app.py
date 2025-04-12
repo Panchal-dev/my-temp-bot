@@ -1,16 +1,19 @@
 import os
-import requests
+import aiohttp
+import aioflask
+from flask import request
 from bs4 import BeautifulSoup
 import re
 from urllib.parse import urljoin
-from flask import Flask, request
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from io import BytesIO
-import telegram
+from telegram import Bot, Update
+from telegram.ext import Application
 import time
 import logging
 import shutil
 import json
+import asyncio
 from telegram.error import TelegramError
 
 # Initialize logging
@@ -20,7 +23,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-app = Flask(__name__)
+app = aioflask.Flask(__name__)
 
 # Configuration
 BASE_URL = "https://desifakes.com"
@@ -128,28 +131,32 @@ def log_error(url, error_message):
         f.write(f"{url} - {error_message}\n")
         logger.info(f"Logged error for {url}: {error_message}")
 
-def make_request(url, proxy_group, max_retries=MAX_RETRIES):
-    proxies = proxy_group
-    for attempt in range(max_retries):
-        try:
-            response = requests.get(url, timeout=10, proxies=proxies)
-            response.raise_for_status()
-            logger.info(f"Success with {proxies['http']} on attempt {attempt + 1} for {url}")
-            return response
-        except Exception as e:
-            logger.warning(f"Failed with {proxies['http']} on attempt {attempt + 1} for {url}: {str(e)}")
-            if attempt == max_retries - 1:
-                for fallback_proxy in FALLBACK_PROXIES:
-                    try:
-                        response = requests.get(url, timeout=10, proxies=fallback_proxy)
-                        response.raise_for_status()
-                        logger.info(f"Success with fallback {fallback_proxy['http']} for {url}")
-                        return response
-                    except Exception as fb_e:
-                        logger.warning(f"Fallback {fallback_proxy['http']} failed for {url}: {str(fb_e)}")
-                log_error(url, f"All proxies failed: {str(e)}")
-                raise
-            time.sleep(1)
+async def make_request(url, proxy_group, max_retries=MAX_RETRIES):
+    proxy = proxy_group.get("http")
+    async with aiohttp.ClientSession() as session:
+        for attempt in range(max_retries):
+            try:
+                async with session.get(url, proxy=proxy, timeout=10) as response:
+                    response.raise_for_status()
+                    text = await response.text()
+                    logger.info(f"Success with {proxy} on attempt {attempt + 1} for {url}")
+                    return text
+            except Exception as e:
+                logger.warning(f"Failed with {proxy} on attempt {attempt + 1} for {url}: {str(e)}")
+                if attempt == max_retries - 1:
+                    for fallback_proxy in FALLBACK_PROXIES:
+                        fallback = fallback_proxy.get("http")
+                        try:
+                            async with session.get(url, proxy=fallback, timeout=10) as response:
+                                response.raise_for_status()
+                                text = await response.text()
+                                logger.info(f"Success with fallback {fallback} for {url}")
+                                return text
+                        except Exception as fb_e:
+                            logger.warning(f"Fallback {fallback} failed for {url}: {str(fb_e)}")
+                    log_error(url, f"All proxies failed: {str(e)}")
+                    raise
+                await asyncio.sleep(1)
 
 def generate_year_link(year, username, title_only=False):
     start_date = f"{year}-01-01"
@@ -165,7 +172,7 @@ def split_url(url, start_date, end_date, max_pages=10):
         from datetime import datetime, timedelta
         start_dt = datetime.strptime(start_date, "%Y-%m-%d")
         end_dt = datetime.strptime(end_date, "%Y-%m-%d")
-        total_pages = fetch_total_pages(url)
+        total_pages = asyncio.run(fetch_total_pages(url))
         logger.info(f"Total pages for {url}: {total_pages}")
         if total_pages < max_pages:
             return [url]
@@ -183,13 +190,13 @@ def split_url(url, start_date, end_date, max_pages=10):
         logger.error(f"Split error for {url}: {str(e)}")
         return [url]
 
-def fetch_total_pages(url, proxy_group=PROXY_GROUP_1):
+async def fetch_total_pages(url, proxy_group=PROXY_GROUP_1):
     if url in page_cache:
         logger.info(f"Using cached total pages for {url}: {page_cache[url]}")
         return page_cache[url]
     try:
-        response = make_request(url, proxy_group)
-        soup = BeautifulSoup(response.text, 'html.parser')
+        text = await make_request(url, proxy_group)
+        soup = BeautifulSoup(text, 'html.parser')
         pagination = soup.find('div', class_='pageNav')
         total_pages = max(int(link.text.strip()) for link in pagination.find_all('a') if link.text.strip().isdigit()) if pagination else 1
         page_cache[url] = total_pages
@@ -200,10 +207,10 @@ def fetch_total_pages(url, proxy_group=PROXY_GROUP_1):
         logger.error(f"Error fetching total pages for {url}: {str(e)}")
         return 1
 
-def scrape_post_links(search_url, proxy_group=PROXY_GROUP_1):
+async def scrape_post_links(search_url, proxy_group=PROXY_GROUP_1):
     try:
-        response = make_request(search_url, proxy_group)
-        soup = BeautifulSoup(response.text, 'html.parser')
+        text = await make_request(search_url, proxy_group)
+        soup = BeautifulSoup(text, 'html.parser')
         links = list(dict.fromkeys(urljoin(BASE_URL, link['href']) for link in soup.find_all('a', href=True)
                                    if 'threads/' in link['href'] and not link['href'].startswith('#') and not 'page-' in link['href']))
         logger.info(f"Found {len(links)} post links for {search_url}")
@@ -243,11 +250,11 @@ def add_media(media_url, media_type, year, image_list=None, video_list=None, gif
     logger.info(f"Rejected {media_type}: {media_url} for year {year}")
     return False
 
-def process_post(post_link, year, username, proxy_group, image_list, video_list, gif_list):
+async def process_post(post_link, year, username, proxy_group, image_list, video_list, gif_list):
     try:
         logger.info(f"Processing post: {post_link}")
-        response = make_request(post_link, proxy_group)
-        soup = BeautifulSoup(response.text, 'html.parser')
+        text = await make_request(post_link, proxy_group)
+        soup = BeautifulSoup(text, 'html.parser')
         post_id = re.search(r'post-(\d+)', post_link).group(1) if re.search(r'post-(\d+)', post_link) else None
         articles = [soup.find('article', {'data-content': f'post-{post_id}', 'id': f'js-post-{post_id}'})] if post_id else soup.find_all('article')
         username_lower = username.lower()
@@ -296,19 +303,19 @@ def process_post(post_link, year, username, proxy_group, image_list, video_list,
         log_error(post_link, f"Process post error: {str(e)}")
         logger.error(f"Error processing post {post_link}: {str(e)}")
 
-def process_year(year, search_url, username, chat_id, image_list, video_list, gif_list):
+async def process_year(year, search_url, username, chat_id, image_list, video_list, gif_list):
     try:
-        total_pages = fetch_total_pages(search_url, PROXY_GROUP_1)
+        total_pages = await fetch_total_pages(search_url, PROXY_GROUP_1)
         urls_to_process = split_url(search_url, f"{year}-01-01", f"{year}-12-31") if total_pages >= 10 else [search_url]
         executor1 = ThreadPoolExecutor(max_workers=3)
         executor2 = ThreadPoolExecutor(max_workers=3)
         executor3 = ThreadPoolExecutor(max_workers=3)
         futures = []
         for url in urls_to_process:
-            total_pages = fetch_total_pages(url, PROXY_GROUP_1)
+            total_pages = await fetch_total_pages(url, PROXY_GROUP_1)
             logger.info(f"Processing {total_pages} pages for {url}")
             for page in range(total_pages, 0, -1):  # Reverse for Dec 31 to Jan 1
-                post_links = scrape_post_links(f"{url}&page={page}", PROXY_GROUP_1)
+                post_links = await scrape_post_links(f"{url}&page={page}", PROXY_GROUP_1)
                 third = len(post_links) // 3
                 for i, post in enumerate(post_links):
                     if i < third:
@@ -320,9 +327,9 @@ def process_year(year, search_url, username, chat_id, image_list, video_list, gi
                     else:
                         proxy_group = PROXY_GROUP_3
                         executor = executor3
-                    future = executor.submit(process_post, post, year, username, proxy_group, image_list, video_list, gif_list)
+                    future = executor.submit(asyncio.run, process_post(post, year, username, proxy_group, image_list, video_list, gif_list))
                     futures.append(future)
-                    time.sleep(THREAD_SUBMISSION_DELAY)
+                    await asyncio.sleep(THREAD_SUBMISSION_DELAY)
         _, _, progress_msg_id = active_tasks[chat_id]
         active_tasks[chat_id] = ((executor1, executor2, executor3), futures, progress_msg_id)
         for future in as_completed(futures):
@@ -373,46 +380,46 @@ def merge_and_deduplicate(file_type, media_list, merge_dir, username, start_year
         close_html(final_file_path)
     return final_file_path
 
-def send_telegram_message(chat_id, text, max_retries=MAX_RETRIES, **kwargs):
+async def send_telegram_message(bot, chat_id, text, max_retries=MAX_RETRIES, **kwargs):
     for attempt in range(max_retries):
         try:
-            response = bot.send_message(chat_id=chat_id, text=text, **kwargs)
+            response = await bot.send_message(chat_id=chat_id, text=text, **kwargs)
             logger.info(f"Sent message to chat_id {chat_id}: {text[:50]}...")
-            time.sleep(TELEGRAM_RATE_LIMIT_DELAY)
+            await asyncio.sleep(TELEGRAM_RATE_LIMIT_DELAY)
             return response
         except TelegramError as e:
             if 'Too Many Requests' in str(e):
                 retry_after = 3
                 logger.warning(f"429 Too Many Requests: retrying after {retry_after} seconds")
-                time.sleep(retry_after)
+                await asyncio.sleep(retry_after)
                 continue
             logger.error(f"Send message attempt {attempt + 1} failed for chat_id {chat_id}: {str(e)}")
             if attempt == max_retries - 1:
                 raise
-            time.sleep(1 * (attempt + 1))
+            await asyncio.sleep(1 * (attempt + 1))
     raise Exception("Failed to send message after retries")
 
-def send_telegram_document(chat_id, file_buffer, filename, caption, max_retries=MAX_RETRIES):
+async def send_telegram_document(bot, chat_id, file_buffer, filename, caption, max_retries=MAX_RETRIES):
     for attempt in range(max_retries):
         try:
             file_buffer.seek(0)
-            response = bot.send_document(chat_id=chat_id, document=file_buffer, filename=filename, caption=caption[:1024])
+            response = await bot.send_document(chat_id=chat_id, document=file_buffer, filename=filename, caption=caption[:1024])
             logger.info(f"Sent document {filename} to chat_id {chat_id}")
-            time.sleep(TELEGRAM_RATE_LIMIT_DELAY)
+            await asyncio.sleep(TELEGRAM_RATE_LIMIT_DELAY)
             return response
         except TelegramError as e:
             if 'Too Many Requests' in str(e):
                 retry_after = 3
                 logger.warning(f"429 Too Many Requests: retrying after {retry_after} seconds")
-                time.sleep(retry_after)
+                await asyncio.sleep(retry_after)
                 continue
             logger.error(f"Send document attempt {attempt + 1} failed for chat_id {chat_id}: {str(e)}")
             if attempt == max_retries - 1:
                 raise
-            time.sleep(1 * (attempt + 1))
+            await asyncio.sleep(1 * (attempt + 1))
     raise Exception("Failed to send document after retries")
 
-def cancel_task(chat_id):
+async def cancel_task(bot, chat_id):
     if chat_id in active_tasks:
         (executor1, executor2, executor3), futures, progress_msg_id = active_tasks[chat_id]
         for future in futures:
@@ -422,7 +429,7 @@ def cancel_task(chat_id):
         executor3.shutdown(wait=False)
         if progress_msg_id:
             try:
-                bot.delete_message(chat_id=chat_id, message_id=progress_msg_id)
+                await bot.delete_message(chat_id=chat_id, message_id=progress_msg_id)
                 logger.info(f"Deleted progress message for chat_id {chat_id}")
             except TelegramError as e:
                 logger.error(f"Failed to delete progress message for chat_id {chat_id}: {str(e)}")
@@ -433,7 +440,8 @@ def cancel_task(chat_id):
     return False
 
 @app.route('/telegram', methods=['POST'])
-def telegram_webhook():
+async def telegram_webhook():
+    bot = app.bot
     try:
         update = request.get_json()
         if not update or 'message' not in update:
@@ -444,23 +452,23 @@ def telegram_webhook():
         text = update['message'].get('text', '').strip()
         logger.info(f"Received command: {text} from chat_id: {chat_id}")
         if chat_id not in ALLOWED_CHAT_IDS:
-            send_telegram_message(chat_id=chat_id, text="❌ Restricted to specific users.", reply_to_message_id=message_id)
+            await send_telegram_message(bot, chat_id=chat_id, text="❌ Restricted to specific users.", reply_to_message_id=message_id)
             return '', 200
         if not text:
-            send_telegram_message(chat_id=chat_id, text="Please send a search query", reply_to_message_id=message_id)
+            await send_telegram_message(bot, chat_id=chat_id, text="Please send a search query", reply_to_message_id=message_id)
             return '', 200
         if text.lower() == '/stop':
-            if cancel_task(chat_id):
-                send_telegram_message(chat_id=chat_id, text="✅ Scraping stopped", reply_to_message_id=message_id)
+            if await cancel_task(bot, chat_id):
+                await send_telegram_message(bot, chat_id=chat_id, text="✅ Scraping stopped", reply_to_message_id=message_id)
             else:
-                send_telegram_message(chat_id=chat_id, text="ℹ️ No active scraping to stop", reply_to_message_id=message_id)
+                await send_telegram_message(bot, chat_id=chat_id, text="ℹ️ No active scraping to stop", reply_to_message_id=message_id)
             return '', 200
         parts = text.split()
         if len(parts) < 1 or (parts[0] == '/start' and len(parts) < 2):
-            send_telegram_message(chat_id=chat_id, text="Usage: username [title_only y/n] [start_year] [end_year]\nExample: 'Madhuri Dixit' n 2019 2025", reply_to_message_id=message_id)
+            await send_telegram_message(bot, chat_id=chat_id, text="Usage: username [title_only y/n] [start_year] [end_year]\nExample: 'Madhuri Dixit' n 2019 2025", reply_to_message_id=message_id)
             return '', 200
         if chat_id in active_tasks:
-            send_telegram_message(chat_id=chat_id, text="⚠️ Scraping already running. Use /stop to cancel.", reply_to_message_id=message_id)
+            await send_telegram_message(bot, chat_id=chat_id, text="⚠️ Scraping already running. Use /stop to cancel.", reply_to_message_id=message_id)
             return '', 200
         if parts[0] == '/start':
             username = ' '.join(parts[1:-3]) if len(parts) > 4 else parts[1]
@@ -475,12 +483,12 @@ def telegram_webhook():
         os.makedirs(SAVE_DIR, exist_ok=True)
         os.makedirs(MERGE_DIR, exist_ok=True)
         try:
-            progress_msg = send_telegram_message(chat_id=chat_id, text=f"🔍 Processing '{username}' ({start_year}-{end_year})...")
+            progress_msg = await send_telegram_message(bot, chat_id=chat_id, text=f"🔍 Processing '{username}' ({start_year}-{end_year})...")
             active_tasks[chat_id] = (None, [], progress_msg.message_id)
             logger.info(f"Sent progress message for chat_id {chat_id}, message_id: {progress_msg.message_id}")
         except Exception as e:
             logger.error(f"Failed to send progress message for chat_id {chat_id}: {str(e)}")
-            send_telegram_message(chat_id=chat_id, text=f"❌ Failed to start: {str(e)}", reply_to_message_id=message_id)
+            await send_telegram_message(bot, chat_id=chat_id, text=f"❌ Failed to start: {str(e)}", reply_to_message_id=message_id)
             return '', 200
         try:
             years = list(range(end_year, start_year - 1, -1))
@@ -489,11 +497,11 @@ def telegram_webhook():
             gif_list = []
             for year in years:
                 search_url = generate_year_link(year, username, title_only)
-                process_year(year, search_url, username, chat_id, image_list, video_list, gif_list)
+                await process_year(year, search_url, username, chat_id, image_list, video_list, gif_list)
             logger.info(f"Collected {len(image_list)} images, {len(video_list)} videos, {len(gif_list)} GIFs")
             any_sent = False
             for file_type, media_list in [("images", image_list), ("videos", video_list), ("gifs", gif_list)]:
-                final_file_path = merge_and_deduplicate(file_type, media_list, MERGE_DIR, username, start_year, end_year)
+                final_file_path.ConcurrentModificationError = merge_and_deduplicate(file_type, media_list, MERGE_DIR, username, start_year, end_year)
                 if final_file_path and os.path.exists(final_file_path) and os.path.getsize(final_file_path) > 0:
                     with open(final_file_path, 'rb') as f:
                         html_file = BytesIO(f.read())
@@ -505,20 +513,20 @@ def telegram_webhook():
                             total_items = len(json.loads(re.search(r'const imageUrls = (\[.*?\]);', script_tag.string, re.DOTALL).group(1))) if script_tag else 0
                         else:
                             total_items = len(soup.body.find_all(['p', 'div'], recursive=False)) - len(soup.body.find_all('div', class_='year-section')) if soup.body else 0
-                    send_telegram_document(chat_id, html_file, html_file.name,
-                                          f"Found {total_items} {file_type} for '{username}' ({start_year}-{end_year})")
+                    await send_telegram_document(bot, chat_id, html_file, html_file.name,
+                                                f"Found {total_items} {file_type} for '{username}' ({start_year}-{end_year})")
                     logger.info(f"Sent {file_type}.html with {total_items} items to chat_id {chat_id}")
                     any_sent = True
                 else:
                     logger.info(f"No {file_type} found or file empty: {final_file_path}")
-            bot.delete_message(chat_id=chat_id, message_id=progress_msg.message_id)
+            await bot.delete_message(chat_id=chat_id, message_id=progress_msg.message_id)
             logger.info(f"Deleted progress message for chat_id {chat_id}")
             if not any_sent:
-                send_telegram_message(chat_id=chat_id, text=f"⚠️ No media found for '{username}' ({start_year}-{end_year})")
+                await send_telegram_message(bot, chat_id=chat_id, text=f"⚠️ No media found for '{username}' ({start_year}-{end_year})")
         except Exception as e:
             logger.error(f"Error processing {username} for chat_id {chat_id}: {str(e)}")
-            bot.edit_message_text(chat_id=chat_id, message_id=progress_msg.message_id,
-                                 text=f"❌ Error for '{username}': {str(e)}")
+            await bot.edit_message_text(chat_id=chat_id, message_id=progress_msg.message_id,
+                                       text=f"❌ Error for '{username}': {str(e)}")
         finally:
             if chat_id in active_tasks:
                 (executor1, executor2, executor3), _, _ = active_tasks[chat_id]
@@ -537,43 +545,46 @@ def telegram_webhook():
         logger.critical(f"Unhandled error in webhook for chat_id {chat_id if 'chat_id' in locals() else 'unknown'}: {str(e)}")
         if 'chat_id' in locals() and 'message_id' in locals():
             try:
-                send_telegram_message(chat_id=chat_id, text=f"❌ Critical error: {str(e)}", reply_to_message_id=message_id)
+                await send_telegram_message(bot, chat_id=chat_id, text=f"❌ Critical error: {str(e)}", reply_to_message_id=message_id)
             except Exception as send_e:
                 logger.error(f"Failed to send error message to chat_id {chat_id}: {str(send_e)}")
         if 'chat_id' in locals() and chat_id in active_tasks:
-            cancel_task(chat_id)
+            await cancel_task(bot, chat_id)
         return '', 200
 
 @app.route('/health', methods=['GET'])
-def health_check():
+async def health_check():
     from flask import jsonify
     from datetime import datetime
     return jsonify({"status": "healthy", "time": datetime.now().isoformat()})
 
-def set_webhook():
+async def set_webhook():
     railway_url = os.environ.get('RAILWAY_PUBLIC_DOMAIN')
     if railway_url:
         webhook_url = f"https://{railway_url}/telegram"
         try:
-            bot.set_webhook(url=webhook_url)
+            await app.bot.set_webhook(url=webhook_url)
             logger.info(f"Webhook set to: {webhook_url}")
         except TelegramError as e:
             logger.error(f"Failed to set webhook: {str(e)}")
     else:
         logger.error("RAILWAY_PUBLIC_DOMAIN not set")
 
-try:
-    TELEGRAM_BOT_TOKEN = os.environ['TELEGRAM_BOT_TOKEN']
-    bot = telegram.Bot(token=TELEGRAM_BOT_TOKEN)
-    logger.info("Bot initialized successfully")
-except KeyError:
-    logger.error("TELEGRAM_BOT_TOKEN environment variable not set!")
-    raise
-except Exception as e:
-    logger.error(f"Failed to initialize bot: {str(e)}")
-    raise
+def init_bot():
+    try:
+        TELEGRAM_BOT_TOKEN = os.environ['TELEGRAM_BOT_TOKEN']
+        bot = Bot(token=TELEGRAM_BOT_TOKEN)
+        app.bot = bot
+        logger.info("Bot initialized successfully")
+        asyncio.run(set_webhook())
+    except KeyError:
+        logger.error("TELEGRAM_BOT_TOKEN environment variable not set!")
+        raise
+    except Exception as e:
+        logger.error(f"Failed to initialize bot: {str(e)}")
+        raise
 
 if __name__ == "__main__":
-    set_webhook()
+    init_bot()
     port = int(os.environ.get("PORT", 8080))
     app.run(host="0.0.0.0", port=port, debug=False)
