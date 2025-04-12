@@ -418,7 +418,7 @@ def telegram_webhook():
             if cancel_task(chat_id):
                 send_telegram_message(chat_id=chat_id, text="✅ Scraping stopped", reply_to_message_id=message_id)
             else:
-                send_telegram_message(chat_id=chat_id, text="ℹ️ No active scraping to stop", reply_to_message_id=message_id)
+                send_telegram_message(chat_id=chat_id, text="ℹ️ No active scraping to stop -jp", reply_to_message_id=message_id)
             return '', 200
         parts = text.split()
         if len(parts) < 1 or (parts[0] == '/start' and len(parts) < 2):
